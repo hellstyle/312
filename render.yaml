@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: funpaycardinal
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Render передаёт PORT автоматически — бот его подхватит
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    # Без autoDeploy чтобы не деплоить каждый push в GitHub
+    autoDeploy: false
+    # Бесплатный план
+    plan: free
