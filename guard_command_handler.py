@@ -92,10 +92,16 @@ def handle_guard_code_command(c: Cardinal, e: NewMessageEvent | LastChatMessageC
                         sess = rm.get_active_session_for_chat(chat_id)
                         if sess and sess.is_offline and sess.offline_code_used_at is None:
                             sess.mark_offline_code_used()
-                            rm.save_sessions()
+                            try:
+                                rm.save_sessions()
+                            except Exception as _se:
+                                logger.error(f"!code: не сохранить offline timer: {_se}")
                         elif sess and sess.is_rental and sess.rental_code_used_at is None:
                             sess.mark_rental_code_used()
-                            rm.save_sessions()
+                            try:
+                                rm.save_sessions()
+                            except Exception as _se:
+                                logger.error(f"!code: не сохранить rental timer: {_se}")
                 except Exception:
                     pass
             if code and not code.startswith("❌"):

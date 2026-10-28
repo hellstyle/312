@@ -71,6 +71,9 @@ class RentalSession:
         if self.is_rental and self.rental_code_used_at and not self.game_downloaded:
             if time.time() > self.rental_code_used_at + self.download_timeout_secs:
                 return True
+        # Для аренды без первого !code — ещё не началась, не истекает по end_time
+        if self.is_rental and self.rental_code_used_at is None and not self.game_downloaded:
+            return False
         return time.time() > self.end_time
 
     def is_download_timeout(self) -> bool:
@@ -197,7 +200,9 @@ class RentalManager:
         self.checker_thread = None
         
         # Создаем директорию для хранения
-        os.makedirs(os.path.dirname(storage_path), exist_ok=True)
+        _storage_dir = os.path.dirname(storage_path)
+        if _storage_dir:
+            os.makedirs(_storage_dir, exist_ok=True)
         
         # Загружаем сохраненные сессии и учётки
         self.load_sessions()
@@ -277,11 +282,12 @@ class RentalManager:
             return False
     
     def end_session(self, session_id: str) -> bool:
-        """Завершает сессию."""
+        """Завершает сессию. Возвращает True только если сессия была активна."""
         with self.lock:
             session = self.sessions.get(session_id)
-            if session:
+            if session and session.active:
                 session.active = False
+                session.code_revoked = True  # атомарно с active=False внутри lock
                 self.save_sessions()
                 logger.info(f"Сессия {session_id} завершена")
                 return True
@@ -420,12 +426,10 @@ class RentalManager:
                 
                 for session in expired_sessions:
                     logger.info(f"Истекла сессия {session.session_id}: {session.game_name}")
-                    
-                    # Завершаем сессию
-                    self.end_session(session.session_id)
-                    
-                    # Вызываем callback если есть
-                    if callback:
+                    # end_session ставит active=False; если уже False (закрыта через !offline_done)
+                    # — не вызываем callback повторно
+                    ended = self.end_session(session.session_id)
+                    if ended and callback:
                         callback(session)
                 
                 time.sleep(interval)

@@ -19,14 +19,40 @@ class PurchaseChecker:
 
     def __init__(self, cardinal: "Cardinal"):
         self.cardinal = cardinal
-        # Множество chat_id пользователей, совершивших покупку
         self.purchased_chat_ids: Set[int] = set()
-        # Привязка чата к Steam-аккаунту (для корректного !code при нескольких аккаунтах)
         self.account_for_chat: dict[int, str] = {}
+        self._persistence_path = "storage/purchase_registry.json"
+        self._load()
+
+    def _load(self):
+        """Загружает реестр покупок с диска."""
+        import json, os
+        try:
+            if os.path.exists(self._persistence_path):
+                with open(self._persistence_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.purchased_chat_ids = set(int(x) for x in data.get("chat_ids", []))
+                self.account_for_chat = {int(k): v for k, v in data.get("account_for_chat", {}).items()}
+                logger.info(f"PurchaseChecker: загружено {len(self.purchased_chat_ids)} покупок")
+        except Exception as e:
+            logger.error(f"PurchaseChecker._load: {e}")
+
+    def _save(self):
+        """Сохраняет реестр покупок на диск."""
+        import json, os
+        try:
+            os.makedirs(os.path.dirname(self._persistence_path), exist_ok=True)
+            with open(self._persistence_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "chat_ids": list(self.purchased_chat_ids),
+                    "account_for_chat": {str(k): v for k, v in self.account_for_chat.items()},
+                }, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"PurchaseChecker._save: {e}")
 
     def set_account_for_chat(self, chat_id: int, steam_login: str):
-        """Запоминает, какой Steam-аккаунт выдан в чат (для маршрутизации !code)."""
         self.account_for_chat[chat_id] = steam_login
+        self._save()
 
     def get_account_for_chat(self, chat_id: int) -> str | None:
         """Возвращает Steam-логин, привязанный к чату, или None."""
@@ -44,6 +70,7 @@ class PurchaseChecker:
         :param username: ник покупателя
         """
         self.purchased_chat_ids.add(chat_id)
+        self._save()
         logger.info(f"PurchaseChecker: покупка зарегистрирована — {username} (chat_id: {chat_id})")
 
     # ------------------------------------------------------------------
@@ -128,6 +155,7 @@ class PurchaseChecker:
         :param username: ник покупателя
         """
         self.purchased_chat_ids.discard(chat_id)
+        self._save()
         logger.info(f"PurchaseChecker: покупка удалена для {username} (chat_id: {chat_id})")
 
     def clear_all(self):

@@ -693,6 +693,9 @@ def deliver_product_handler(c: Cardinal, e: NewOrderEvent, *args) -> None:
         if is_rental or is_offline:
             try:
                 from rental_system import RentalSession as RS
+                if is_offline and is_rental:
+                    logger.warning(f"Лот '{e.order.description}' содержит и 'аренда' и 'offline' — "
+                                   f"используется тип offline")
                 session_type = RS.SESSION_TYPE_OFFLINE if is_offline else RS.SESSION_TYPE_RENTAL
                 # Для оффлайн — 2 часа, для аренды — из конфига
                 if is_offline:

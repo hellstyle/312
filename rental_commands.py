@@ -163,9 +163,10 @@ def handle_offline_done(c: "Cardinal", e):
         return
 
     rm = get_rental_manager()
-    session.offline_confirmed = True
-    session.revoke_code()
-    session.active = False
+    with rm.lock:
+        session.offline_confirmed = True
+        session.revoke_code()
+        session.active = False
     rm.save_sessions()
 
     _send(c, chat_id,
