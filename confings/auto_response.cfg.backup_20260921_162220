@@ -1,0 +1,44 @@
+[!code]
+response: 🐦 Код Steam Guard для $username: $code (действителен ~30 секунд)
+telegramNotification: 1
+enabled: 1
+
+[!steamcode]
+response: 🐦 Steam Guard код: $code (действителен ~30 секунд)
+telegramNotification: 1
+enabled: 1
+
+[!guard]
+response: 🐦 Guard код: $code (время действия ~30 сек)
+telegramNotification: 1
+enabled: 1
+
+[код]
+response: 🐦 Ваш Steam Guard код: $code (действителен ~30 секунд)
+telegramNotification: 1
+enabled: 1
+
+[стим гвард]
+response: 🐦 Steam Guard код для $username: $code (действителен ~30 секунд)
+telegramNotification: 1
+enabled: 1
+
+[!help]
+response: 🐦 Доступные команды:
+!code - получить Steam Guard код
+!steamcode - получить Steam Guard код
+!guard - получить Guard код
+код - получить Steam Guard код
+стим гвард - получить Steam Guard код
+telegramNotification: 0
+enabled: 1
+
+[помощь]
+response: 🐦 Доступные команды:
+!code - получить Steam Guard код
+!steamcode - получить Steam Guard код
+!guard - получить Guard код
+код - получить Steam Guard код
+стим гвард - получить Steam Guard код
+telegramNotification: 0
+enabled: 1

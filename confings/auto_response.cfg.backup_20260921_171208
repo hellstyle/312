@@ -1,0 +1,9 @@
+[!code]
+response: 🐦 Код Steam Guard для $username: $code (действителен ~30 секунд)
+telegramNotification: 1
+enabled: 1
+
+[тест]
+response: 🐦 Тестовый ответ! Привет, $username!
+telegramNotification: 1
+enabled: 1
