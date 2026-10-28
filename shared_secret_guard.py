@@ -37,12 +37,15 @@ class SharedSecretGuard:
             logger.error(f"Ошибка инициализации shared_secret: {e}")
             self.secret = None
     
+    # Алфавит Steam Guard — 26 символов (используется для генерации 5-символьного кода)
+    STEAM_CHARS = "23456789BCDFGHJKMNPQRTVWXY"
+
     def generate_code(self, timestamp: Optional[int] = None) -> str:
         """
         Генерирует Steam Guard код для указанного времени.
         
         :param timestamp: Unix timestamp (если None, используется текущее время)
-        :return: 6-значный код или None при ошибке
+        :return: 5-символьный код (A-Z0-9 Steam alphabet) или None при ошибке
         """
         if not self.enabled or not self.secret:
             return None
@@ -54,25 +57,22 @@ class SharedSecretGuard:
             # Используем временной интервал 30 секунд
             time_interval = timestamp // 30
             
-            # Создаем HMAC-SHA1
-            hmac_obj = hmac.new(self.secret, struct.pack('>I', time_interval), hashlib.sha1)
+            # Создаем HMAC-SHA1 (8 байт big-endian, как в Steam)
+            hmac_obj = hmac.new(self.secret, struct.pack('>Q', time_interval), hashlib.sha1)
             hmac_digest = hmac_obj.digest()
             
-            # Извлекаем 4 байта по смещению
+            # Извлекаем 4 байта по смещению (dynamic truncation)
             offset = hmac_digest[-1] & 0x0F
-            code_bytes = hmac_digest[offset:offset + 4]
-            
-            # Конвертируем в число
-            code_int = struct.unpack('>I', code_bytes)[0]
-            
-            # Получаем последние 7 бит
+            code_int = struct.unpack('>I', hmac_digest[offset:offset + 4])[0]
             code_int &= 0x7FFFFFFF
             
-            # Генерируем 6-значный код
-            code = code_int % 1000000
+            # Кодируем 5 символов из Steam-алфавита
+            code = ""
+            for _ in range(5):
+                code += self.STEAM_CHARS[code_int % len(self.STEAM_CHARS)]
+                code_int //= len(self.STEAM_CHARS)
             
-            # Форматируем с ведущими нулями
-            return f"{code:06d}"
+            return code
             
         except Exception as e:
             logger.error(f"Ошибка генерации кода: {e}")

@@ -738,12 +738,59 @@ class TGBot:
             except Exception as ex:
                 logger.error(f"Ошибка отправки уведомления владельцу: {ex}")
 
+    def tg_refund(self, m: Message):
+        """
+        Команда /refund <order_id> — ручной возврат средств по ID заказа.
+
+        Использование:
+          /refund ABCD1234        — возврат по ID заказа
+          /refund                 — показывает справку
+        """
+        if m.from_user.id not in self.authorized_users:
+            self.bot.send_message(m.chat.id, "⛔ Нет доступа.")
+            return
+
+        parts = m.text.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            self.bot.send_message(
+                m.chat.id,
+                "↩️ <b>Команда /refund</b>\n\n"
+                "Возврат средств покупателю по ID заказа.\n\n"
+                "<b>Использование:</b>\n"
+                "<code>/refund ABCD1234</code>\n\n"
+                "ID заказа можно найти в уведомлении о заказе или на FunPay."
+            )
+            return
+
+        order_id = parts[1].strip().lstrip("#")
+        self.bot.send_message(m.chat.id, f"⏳ Оформляю возврат по заказу <code>{order_id}</code>...")
+
+        try:
+            from refund_handler import manual_refund
+            success = manual_refund(self.cardinal, order_id)
+            if success:
+                self.bot.send_message(
+                    m.chat.id,
+                    f"✅ Возврат по заказу <code>{order_id}</code> успешно оформлен."
+                )
+            else:
+                self.bot.send_message(
+                    m.chat.id,
+                    f"❌ Не удалось оформить возврат по заказу <code>{order_id}</code>.\n"
+                    f"Проверьте ID заказа и статус заказа на FunPay."
+                )
+        except Exception as e:
+            logger.error(f"tg_refund: ошибка: {e}")
+            self.bot.send_message(
+                m.chat.id,
+                f"❌ Ошибка при возврате: <code>{e}</code>"
+            )
+
     def scan_steam_library(self, m: Message):
         """
         Сканирует библиотеку Steam и показывает список игр для создания шаблонов.
         """
-        from auto_lot_creator import get_auto_lot_creator
-        
+        from auto_lot_creator import get_auto_lot_creator        
         creator = get_auto_lot_creator()
         if not creator:
             self.bot.send_message(m.chat.id, "❌ AutoLotCreator не инициализирован. Проверьте конфигурацию.")
@@ -1593,6 +1640,7 @@ class TGBot:
         self.msg_handler(self.send_announcements_kb, commands=["announcements"])
         self.msg_handler(self.tg_guard_code, commands=["code"])
         self.msg_handler(self.add_game_to_list, commands=["add_game"])
+        self.msg_handler(self.tg_refund, commands=["refund"])
         self.cbq_handler(self.send_review_reply_text, lambda c: c.data.startswith(f"{CBT.SEND_REVIEW_REPLY_TEXT}:"))
 
         self.cbq_handler(self.act_send_funpay_message, lambda c: c.data.startswith(f"{CBT.SEND_FP_MESSAGE}:"))

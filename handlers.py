@@ -641,6 +641,13 @@ def deliver_product_handler(c: Cardinal, e: NewOrderEvent, *args) -> None:
             if acct:
                 purchase_checker_instance.set_account_for_chat(e.order.chat_id, acct)
                 logger.info(f"Чат {e.order.chat_id} привязан к Steam-аккаунту {acct}")
+
+    # Привязка чата к заказу (для автовозврата)
+    try:
+        from refund_handler import register_order_for_chat
+        register_order_for_chat(e.order.chat_id, e.order.id)
+    except Exception:
+        pass
     
     # Создаем сессию аренды если это аренда игры
     rental_manager = rental_system.get_rental_manager()

@@ -756,6 +756,10 @@ class Cardinal(object):
         self.add_handlers_from_plugin(guard_command_handler)
         self.add_handlers_from_plugin(form_command_handler)
         
+        # Регистрация хендлера автовозврата
+        import refund_handler as _refund_handler
+        self.add_handlers_from_plugin(_refund_handler)
+        
         # Регистрация хендлера для маркировки лотов
         self.add_handlers_from_plugin(lot_marking_handler)
 
