@@ -258,7 +258,7 @@ language : ru
             if _ss_mel:
                 _ss_text += f"[meloed432]\nusername = meloed432\nshared_secret = {_ss_mel}\nplatform = steam\ndescription = Основной аккаунт\n\n"
             if _ss_yura:
-                _ss_text += f"[yura_yshakov]\nusername = yura_yshakov\nshared_secret = {_ss_yura}\nidentity_secret = {_is_yura}\nsteam_id = 76561198855363300\nplatform = steam\ndescription = Импортировано из maFile\n\n"
+                _ss_text += f"[yura_yshakov]\nusername = yura_yshakov\nprimary = true\nshared_secret = {_ss_yura}\nidentity_secret = {_is_yura}\nsteam_id = 76561198855363300\nplatform = steam\ndescription = Импортировано из maFile\n\n"
             with open("configs/shared_secrets.cfg", "w", encoding="utf-8") as _f:
                 _f.write(_ss_text)
         for _cf in ["configs/auto_response.cfg", "configs/auto_delivery.cfg"]:

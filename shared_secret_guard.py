@@ -116,20 +116,26 @@ class SharedSecretManager:
     
     def __init__(self):
         self.accounts: dict[str, SharedSecretGuard] = {}  # {username: SharedSecretGuard}
+        self.account_meta: dict[str, dict] = {}  # {username: {steam_id, platform, description, ...}}
+        # Аккаунт, используемый по умолчанию при генерации Guard-кода, если
+        # запрашиваемый пользователь не найден среди аккаунтов (напр. ник покупателя).
+        self.primary_account: Optional[str] = None
         self.enabled = False
     
-    def add_account(self, username: str, shared_secret: str) -> bool:
+    def add_account(self, username: str, shared_secret: str, meta: dict | None = None) -> bool:
         """
         Добавляет аккаунт с shared_secret.
-        
+
         :param username: имя пользователя/аккаунта
         :param shared_secret: shared_secret (base64 encoded)
+        :param meta: доп. информация об аккаунте (steam_id, platform, description, ...)
         :return: True если успешно
         """
         try:
             guard = SharedSecretGuard(shared_secret)
             if guard.enabled:
                 self.accounts[username] = guard
+                self.account_meta[username] = meta or {}
                 logger.info(f"Аккаунт {username} добавлен с shared_secret")
                 self.enabled = True
                 return True
@@ -137,7 +143,30 @@ class SharedSecretManager:
         except Exception as e:
             logger.error(f"Ошибка добавления аккаунта {username}: {e}")
             return False
-    
+
+    def set_primary_account(self, username: str) -> bool:
+        """
+        Назначает аккаунт по умолчанию для генерации Guard-кода.
+
+        Используется, когда запрашиваемый пользователь (например, ник покупателя
+        в FunPay) не совпадает ни с одним Steam-аккаунтом из shared_secrets.cfg.
+        Без назначения код генерировался бы от первого попавшегося аккаунта,
+        что приводило к выдаче чужого Guard-кода.
+
+        :param username: имя аккаунта (секция в shared_secrets.cfg)
+        :return: True если аккаунт существует и назначен
+        """
+        if username in self.accounts:
+            self.primary_account = username
+            logger.info(f"Основной Guard-аккаунт: {username}")
+            return True
+        logger.warning(f"Не удалось назначить основной аккаунт {username}: аккаунт не найден")
+        return False
+
+    def get_primary_account(self) -> Optional[str]:
+        """Возвращает имя основного Guard-аккаунта (или None)."""
+        return self.primary_account
+
     def get_code(self, username: str) -> Optional[str]:
         """
         Получает Guard код для указанного пользователя.
@@ -166,19 +195,31 @@ class SharedSecretManager:
         :param username: имя пользователя (используется только для логов)
         :return: dict с кодом и информацией или None
         """
-        # Если пользователь найден в accounts - используем его
+        # Если пользователь найден в accounts — используем его
         if username in self.accounts:
             guard = self.accounts[username]
         else:
-            # Если пользователь не найден - используем первый доступный аккаунт
-            # (Steam Guard код общий для всех)
             if not self.accounts:
-                logger.warning(f"Нет доступных аккаунтов с shared_secret")
+                logger.warning("Нет доступных аккаунтов с shared_secret")
                 return None
-            
-            first_username = list(self.accounts.keys())[0]
-            guard = self.accounts[first_username]
-            logger.info(f"Пользователь {username} не найден, используем аккаунт {first_username}")
+
+            # Используем primary_account если назначен; иначе — единственный аккаунт;
+            # иначе — первый в словаре (с явным предупреждением о возможной ошибке).
+            if self.primary_account and self.primary_account in self.accounts:
+                fallback = self.primary_account
+            elif len(self.accounts) == 1:
+                fallback = list(self.accounts.keys())[0]
+            else:
+                fallback = list(self.accounts.keys())[0]
+                logger.warning(
+                    f"Пользователь «{username}» не найден среди Guard-аккаунтов и основной "
+                    f"аккаунт (primary) не назначен — используем первый: «{fallback}». "
+                    f"Назначьте primary_account в shared_secrets.cfg, добавив строку "
+                    f"'primary = true' в нужную секцию."
+                )
+
+            guard = self.accounts[fallback]
+            logger.info(f"Пользователь «{username}» не найден, используем аккаунт «{fallback}»")
         
         code, remaining = guard.get_code_with_time_remaining()
         
@@ -193,12 +234,15 @@ class SharedSecretManager:
     def remove_account(self, username: str) -> bool:
         """
         Удаляет аккаунт из системы.
-        
+
         :param username: имя пользователя
         :return: True если успешно
         """
         if username in self.accounts:
             del self.accounts[username]
+            self.account_meta.pop(username, None)
+            if self.primary_account == username:
+                self.primary_account = None
             logger.info(f"Аккаунт {username} удален")
             return True
         return False

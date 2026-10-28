@@ -1120,6 +1120,42 @@ BIND_TO_POST_LOTS_RAISE = [send_categories_raised_notification_handler]
 
 # BIND_TO_ORDERS_LIST_CHANGED = [update_profiles_handler]
 
+def _resolve_primary_account(ss_cfg) -> str | None:
+    """
+    Возвращает имя секции основного Guard-аккаунта в shared_secrets.cfg:
+    1) секция с 'primary = true';
+    2) секция, чей steam_id совпадает с [Steam] steam_id из _main.cfg;
+    3) единственная секция;
+    4) первая секция.
+    """
+    import configparser
+    import os as _os
+    try:
+        sections = ss_cfg.sections()
+        if not sections:
+            return None
+        for sec in sections:
+            if ss_cfg[sec].get('primary', '').strip().lower() in ('1', 'true', 'yes', 'on'):
+                return sec
+        try:
+            mc = configparser.ConfigParser()
+            main_path = _os.path.join('configs', '_main.cfg')
+            if _os.path.exists(main_path):
+                mc.read(main_path, encoding='utf-8')
+                target = mc.get('Steam', 'steam_id', fallback='').strip()
+                if target:
+                    for sec in sections:
+                        if ss_cfg[sec].get('steam_id', '').strip() == target:
+                            return sec
+        except Exception:
+            pass
+        if len(sections) == 1:
+            return sections[0]
+        return sections[0]
+    except Exception:
+        return None
+
+
 def register_purchase_on_order_handler(c: Cardinal, e: NewOrderEvent, *args):
     """
     Регистрирует покупку в purchase_checker при ЛЮБОМ новом заказе.
@@ -1145,12 +1181,20 @@ def register_purchase_on_order_handler(c: Cardinal, e: NewOrderEvent, *args):
             elif len(sections) > 1:
                 # Ищем совпадение имени аккаунта в описании лота
                 lot_lower = e.order.description.lower()
+                bound = None
                 for sec in sections:
                     uname = _ss[sec].get("username", sec).lower()
                     if uname in lot_lower:
-                        pc.set_account_for_chat(e.order.chat_id, sec)
-                        logger.info(f"Привязка {e.order.buyer_username} → {sec} по имени в лоте")
+                        bound = sec
                         break
+                # Если имя не найдено в лоте — привязываем к основному Guard-аккаунту
+                # (primary=true или совпадающий по steam_id из _main.cfg), чтобы !code
+                # не выдал код от первого попавшегося аккаунта.
+                if not bound:
+                    bound = _resolve_primary_account(_ss)
+                if bound:
+                    pc.set_account_for_chat(e.order.chat_id, bound)
+                    logger.info(f"Привязка {e.order.buyer_username} → {bound} по основному аккаунту")
     except Exception as _ex:
         logger.error(f"register_purchase_on_order_handler: {_ex}")
 
