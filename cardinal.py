@@ -693,32 +693,65 @@ class Cardinal(object):
             if self.MAIN_CFG.getboolean("Rental", "enabled", fallback=False):
                 check_interval = self.MAIN_CFG.getint("Rental", "check_interval", fallback=60)
                 
-                auto_kick = self.MAIN_CFG.getboolean("Rental", "auto_kick", fallback=False)
-                kick_method = self.MAIN_CFG.get("Rental", "kick_method", fallback="notify")
-
                 def rental_callback(session):
-                    """Callback для истекших сессий — кикаем арендатора (или уведомляем)."""
-                    logger.info(f"Сессия истекла: {session.session_id} - {session.game_name}")
+                    """Callback для истекших сессий — отзываем !code и уведомляем."""
+                    logger.info(f"Сессия истекла: {session.session_id} - {session.game_name} [{session.session_type}]")
                     try:
-                        if not getattr(session, "steam_login", None):
-                            logger.warning(f"rental_callback: нет привязки Steam-аккаунта для {session.session_id}")
-                            return
-                        import configparser
-                        cfg = configparser.ConfigParser()
-                        cfg.read("configs/shared_secrets.cfg", encoding="utf-8")
-                        shared = cfg[session.steam_login].get("shared_secret", "") \
-                            if session.steam_login in cfg.sections() else ""
-                        password = rental_manager.get_credential(session.session_id) or ""
-                        # auto_kick=False (по умолчанию) → только уведомление владельцу.
-                        method = kick_method if auto_kick else "notify"
-                        from steam_kick import kick_account
-                        result = kick_account(self, session.steam_login, password, shared,
-                                               session.session_id, method=method,
-                                               reason="rental_expired")
-                        logger.info(f"rental_callback: kick результат: {result}")
+                        # Отзываем !code
+                        session.revoke_code()
+                        rental_manager.save_sessions()
+
+                        # Уведомляем покупателя в чат FunPay
+                        chat_id = int(session.user_id) if str(session.user_id).isdigit() else session.user_id
+                        is_dl_timeout = (
+                            session.is_rental and
+                            not session.game_downloaded and
+                            session.rental_code_used_at is not None and
+                            time.time() > session.rental_code_used_at + session.download_timeout_secs
+                        ) if hasattr(session, 'rental_code_used_at') else False
+
+                        if session.session_type == "offline":
+                            msg = (
+                                f"⏰ Время оффлайн активации истекло.\n"
+                                f"Игра <b>{session.game_name}</b> продолжает работать в оффлайн-режиме.\n"
+                                f"🔒 Доступ к коду Steam Guard закрыт."
+                            )
+                        elif is_dl_timeout:
+                            msg = (
+                                f"⏰ Время на скачивание истекло (1.5 ч с первого <code>!code</code>).\n\n"
+                                f"Сессия аренды <b>{session.game_name}</b> завершена.\n"
+                                f"🔒 Доступ к коду Steam Guard закрыт.\n\n"
+                                f"Для продолжения — оформите покупку заново."
+                            )
+                        else:
+                            msg = (
+                                f"⏰ Время аренды <b>{session.game_name}</b> истекло.\n"
+                                f"🔒 Доступ к коду Steam Guard закрыт.\n\n"
+                                f"Хотите продолжить? Оформите новую покупку."
+                            )
+                        try:
+                            self.send_message(chat_id, msg, watermark=False)
+                        except Exception:
+                            pass
+
+                        # Кик (если включён)
+                        import configparser as _cp
+                        auto_kick = self.MAIN_CFG.getboolean("Rental", "auto_kick", fallback=False)
+                        kick_method = self.MAIN_CFG.get("Rental", "kick_method", fallback="notify")
+                        if getattr(session, "steam_login", None):
+                            _cfg = _cp.ConfigParser()
+                            _cfg.read("configs/shared_secrets.cfg", encoding="utf-8")
+                            shared = _cfg[session.steam_login].get("shared_secret", "") \
+                                if session.steam_login in _cfg.sections() else ""
+                            password = rental_manager.get_credential(session.session_id) or ""
+                            method = kick_method if auto_kick else "notify"
+                            from steam_kick import kick_account
+                            kick_account(self, session.steam_login, password, shared,
+                                         session.session_id, method=method,
+                                         reason="rental_expired")
                         rental_manager.delete_credential(session.session_id)
                     except Exception as e:
-                        logger.error(f"rental_callback: ошибка кика: {e}")
+                        logger.error(f"rental_callback: {e}")
 
                 rental_manager.start_checker(check_interval, rental_callback)
                 logger.info("Система аренды инициализирована")
@@ -755,7 +788,10 @@ class Cardinal(object):
         # Регистрация хендлера для команды !code
         self.add_handlers_from_plugin(guard_command_handler)
         self.add_handlers_from_plugin(form_command_handler)
-        
+
+        # Регистрация хендлеров аренды и оффлайн-активации
+        import rental_commands as _rental_commands
+        self.add_handlers_from_plugin(_rental_commands)
         # Регистрация хендлера автовозврата
         import refund_handler as _refund_handler
         self.add_handlers_from_plugin(_refund_handler)

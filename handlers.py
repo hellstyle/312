@@ -366,6 +366,40 @@ def process_review_handler(c: Cardinal, e: NewMessageEvent | LastChatMessageChan
                 logger.debug("TRACEBACK", exc_info=True)
         send_review_notification(c, order, chat_id, reply_text)
 
+        # ── Система поощрения: 5 звёзд → бонус добавляется сразу ────────
+        if order.review.stars == 5:
+            try:
+                import random as _random
+                from rental_system import get_rental_manager as _grm
+                bonus_hours = _random.randint(1, 2)
+                rm = _grm()
+                # Ищем активную сессию покупателя и продлеваем её
+                bonus_applied = False
+                if rm:
+                    session = rm.get_active_session_for_chat(chat_id)
+                    if session and session.active and session.is_rental:
+                        session.end_time += bonus_hours * 3600
+                        session.duration_hours += bonus_hours
+                        rm.save_sessions()
+                        bonus_applied = True
+
+                if bonus_applied:
+                    bonus_msg = (
+                        f"⭐ Спасибо за 5 звёзд!\n\n"
+                        f"Бонус начислен прямо сейчас: +{bonus_hours} ч к текущей аренде.\n"
+                        f"Приятной игры! 🎮"
+                    )
+                else:
+                    bonus_msg = (
+                        f"⭐ Спасибо за 5 звёзд!\n\n"
+                        f"Ваш бонус: {bonus_hours} ч аренды — будет добавлен к следующей сессии.\n"
+                        f"Ждём вас снова! 🎮"
+                    )
+                c.send_message(chat_id, bonus_msg, order.buyer_username, watermark=False)
+                logger.info(f"Бонус за 5★: {order.buyer_username} — {bonus_hours} ч (applied={bonus_applied})")
+            except Exception as _e:
+                logger.error(f"Ошибка бонуса за отзыв: {_e}")
+
     Thread(target=send_reply, daemon=True).start()
 
 
@@ -648,36 +682,43 @@ def deliver_product_handler(c: Cardinal, e: NewOrderEvent, *args) -> None:
         register_order_for_chat(e.order.chat_id, e.order.id)
     except Exception:
         pass
-    
-    # Создаем сессию аренды если это аренда игры
+
+    # Создаём сессию (аренда или оффлайн активация) при наличии ключевых слов в названии лота
     rental_manager = rental_system.get_rental_manager()
     if rental_manager and c.MAIN_CFG.getboolean("Rental", "enabled", fallback=False):
-        # Проверяем, является ли лот арендой по названию
-        lot_name = e.order.description.lower()
-        if "аренда" in lot_name or "rental" in lot_name:
+        lot_lower = e.order.description.lower()
+        is_rental  = "аренд" in lot_lower or "rental" in lot_lower or "steam online" in lot_lower
+        is_offline = "offline" in lot_lower or "оффлайн" in lot_lower or "steam offline" in lot_lower
+
+        if is_rental or is_offline:
             try:
-                # Получаем настройки аренды из конфига
-                default_hours = c.MAIN_CFG.getint("Rental", "default_rental_hours", fallback=24)
-                default_price = c.MAIN_CFG.getint("Rental", "default_price", fallback=100)
-                
-                # Определяем название игры из описания лота
-                game_name = e.order.description.replace("Аренда", "").replace("аренда", "").replace("()", "").strip()
-                account_name = c.account.username  # совместимость (индекс account_sessions)
-                
-                # Парсим выданный товар (формат строки: login:password[:steamid])
+                from rental_system import RentalSession as RS
+                session_type = RS.SESSION_TYPE_OFFLINE if is_offline else RS.SESSION_TYPE_RENTAL
+                # Для оффлайн — 2 часа, для аренды — из конфига
+                if is_offline:
+                    default_hours = 2
+                else:
+                    default_hours = c.MAIN_CFG.getint("Rental", "default_rental_hours", fallback=24)
+
+                # Извлекаем название игры из описания
+                # Формат лота: "RUST (STEAM OFFLINE)" → "RUST"
+                import re as _re
+                game_name = _re.sub(
+                    r'\(?\s*(STEAM\s+OFFLINE|STEAM\s+ONLINE|STEAM\s+OFFLINE\/ONLINE|аренда|rental|оффлайн|offline)\s*\)?',
+                    '', e.order.description, flags=_re.IGNORECASE).strip().strip("()").strip()
+                if not game_name:
+                    game_name = e.order.description
+
+                account_name = c.account.username  # индекс account_sessions
                 delivered_lines = getattr(e, "delivered_products", []) or []
-                steam_login = None
-                steam_password = None
-                steamid = None
+                steam_login = steam_password = steamid = None
                 if delivered_lines:
-                    parts = delivered_lines[0].split(":")
-                    if len(parts) >= 2:
-                        steam_login, steam_password = parts[0], parts[1]
-                        # опц. steamid64 в третьем поле
-                        if len(parts) >= 3 and parts[2].isdigit() and len(parts[2]) >= 17:
-                            steamid = parts[2]
-                
-                # Эталон профиля для мониторинга (если включён и есть steamid)
+                    parts_prod = delivered_lines[0].split(":")
+                    if len(parts_prod) >= 2:
+                        steam_login, steam_password = parts_prod[0], parts_prod[1]
+                        if len(parts_prod) >= 3 and parts_prod[2].isdigit() and len(parts_prod[2]) >= 17:
+                            steamid = parts_prod[2]
+
                 profile_baseline = None
                 try:
                     from profile_guardian import get_profile_guardian
@@ -685,9 +726,8 @@ def deliver_product_handler(c: Cardinal, e: NewOrderEvent, *args) -> None:
                     if pg and steamid:
                         profile_baseline = pg.capture_baseline(steamid)
                 except Exception:
-                    profile_baseline = None
-                
-                # Создаем сессию аренды с привязкой к Steam-аккаунту
+                    pass
+
                 session = rental_manager.create_session(
                     user_id=str(e.order.chat_id),
                     game_name=game_name,
@@ -697,28 +737,121 @@ def deliver_product_handler(c: Cardinal, e: NewOrderEvent, *args) -> None:
                     steam_password=steam_password,
                     steamid=steamid,
                     profile_baseline=profile_baseline,
+                    session_type=session_type,
                 )
-                
-                logger.info(f"Создана сессия аренды: {game_name} на {default_hours} часов для {e.order.buyer_username}")
-                
-                # Отправляем информацию о сессии покупателю
-                rental_info = (
-                    f"🎮 Сессия аренды создана!\n\n"
-                    f"📋 Игра: {game_name}\n"
-                    f"⏱ Время аренды: {default_hours} часов\n"
-                    f"💰 Цена: {default_price} рублей\n\n"
-                    f"🔧 Следующие шаги:\n"
-                    f"1. Получите данные аккаунта\n"
-                    f"2. Выберите игру командой: !select_game {game_name}\n"
-                    f"3. Скачайте игру и отправьте: !downloaded\n"
-                    f"4. Наслаждайтесь игрой!\n\n"
-                    f"⏰ Время начнется после скачивания игры"
-                )
-                
-                Thread(target=c.send_message, args=(e.order.chat_id, rental_info, e.order.chat_name), daemon=True).start()
-                
+                if steam_login and steam_password:
+                    rental_manager.store_credential(session.session_id, steam_login, steam_password)
+
+                logger.info(f"Создана сессия [{session_type}]: {game_name} "
+                            f"({default_hours} ч) для {e.order.buyer_username}")
+
+                # ── Сопроводительные письма покупателю (несколько сообщений) ──
+                def _send_letters(chat_id, chat_name, gname, dtype, hours):
+                    import time as _t
+                    if dtype == RS.SESSION_TYPE_OFFLINE:
+                        msgs = [
+                            # Письмо 1 — приветствие
+                            (
+                                f"Спасибо за покупку! 🎮\n\n"
+                                f"Товар: <b>{gname}</b> (Steam Offline)\n"
+                                f"Данные аккаунта — выше. Приятной игры!"
+                            ),
+                            # Письмо 2 — пошаговая инструкция
+                            (
+                                f"<b>Инструкция по активации:</b>\n\n"
+                                f"1. Введите логин и пароль из сообщения выше в Steam\n\n"
+                                f"2. Появится окно запроса кода — вернитесь в этот чат и напишите:\n"
+                                f"   <code>!code</code>\n"
+                                f"   ⏱ Код действует 30 сек. Введите его в Steam\n\n"
+                                f"3. В библиотеке найдите <b>{gname}</b> → установите\n\n"
+                                f"4. Запустите игру, дождитесь главного меню\n\n"
+                                f"5. В главном меню нажмите «Выход» (корректный выход из игры)\n\n"
+                                f"6. Перейдите в Steam → меню → «Перейти в автономный режим»\n\n"
+                                f"7. Напишите <code>!offline_done</code> — активация подтверждена\n\n"
+                                f"8. Подтвердите заказ на FunPay ✅\n\n"
+                                f"⚠️ На весь процесс — <b>2 часа</b> с момента первого <code>!code</code>"
+                            ),
+                            # Письмо 3 — правила + благодарность
+                            (
+                                f"<b>Правила:</b>\n\n"
+                                f"🔒 Не менять в аккаунте ничего: пароль, почту, имя, аватар, настройки — нарушение ведёт к блокировке без возврата\n\n"
+                                f"🚫 Не скачивать игры, которые не приобретены\n\n"
+                                f"🚫 Перепродажа данных аккаунта запрещена\n\n"
+                                f"💳 Возврат после первого <code>!code</code> невозможен\n\n"
+                                f"⭐ Оставьте 5 звёзд — получите +1–2 ч аренды в подарок сразу\n\n"
+                                f"Благодарим за соблюдение условий. Ждём вас снова! 🤝"
+                            ),
+                        ]
+                    else:
+                        msgs = [
+                            # Письмо 1 — приветствие
+                            (
+                                f"Спасибо за покупку! 🎮\n\n"
+                                f"Товар: <b>{gname}</b> (Аренда {hours} ч)\n"
+                                f"Данные аккаунта — выше. Приятной игры!"
+                            ),
+                            # Письмо 2 — пошаговая инструкция
+                            (
+                                f"<b>Инструкция по аренде:</b>\n\n"
+                                f"1. Введите логин и пароль из сообщения выше в Steam\n\n"
+                                f"2. Появится окно кода — вернитесь в этот чат и напишите:\n"
+                                f"   <code>!code</code>\n"
+                                f"   ⏱ Код действует 30 сек. Введите его в Steam\n\n"
+                                f"⚠️ С момента первого <code>!code</code> у вас <b>1.5 часа</b> на скачивание игры\n\n"
+                                f"3. В чате выберите игру:\n"
+                                f"   <code>!select_game {gname}</code>\n\n"
+                                f"4. Скачайте игру, затем напишите:\n"
+                                f"   <code>!downloaded</code>\n"
+                                f"   ⏱ С этого момента идёт отсчёт <b>{hours} ч</b> аренды\n\n"
+                                f"5. Проверить остаток: <code>!rental_status</code>\n\n"
+                                f"6. Продлить (N = часы): <code>!extend N</code>\n\n"
+                                f"По истечении времени <code>!code</code> станет недоступен"
+                            ),
+                            # Письмо 3 — правила + благодарность
+                            (
+                                f"<b>Правила аренды:</b>\n\n"
+                                f"🔒 Не менять в аккаунте ничего — нарушение ведёт к закрытию сессии без возврата\n\n"
+                                f"🚫 Не скачивать игры, которые не приобретены\n\n"
+                                f"🚫 Перепродажа данных запрещена\n\n"
+                                f"💳 Возврат после входа в аккаунт невозможен\n\n"
+                                f"⭐ Оставьте 5 звёзд — получите +1–2 ч к аренде прямо сейчас\n\n"
+                                f"Благодарим за соблюдение условий. Ждём вас снова! 🤝"
+                            ),
+                        ]
+
+                    for msg in msgs:
+                        try:
+                            c.send_message(chat_id, msg, chat_name, watermark=False)
+                        except Exception:
+                            pass
+                        _t.sleep(0.8)
+
+                Thread(
+                    target=_send_letters,
+                    args=(e.order.chat_id, e.order.chat_name, game_name, session_type, default_hours),
+                    daemon=True,
+                ).start()
+
+                # ── Уведомление владельца в Telegram ──────────────────────
+                if c.telegram and c.telegram.bot:
+                    tg_note = (
+                        f"🆕 Новая сессия [{session_type.upper()}]\n\n"
+                        f"👤 {e.order.buyer_username} (заказ #{e.order.id})\n"
+                        f"🎮 {game_name} | ⏱ {default_hours} ч\n"
+                        f"🔑 Steam: {steam_login or '—'}\n"
+                        f"🆔 Сессия: <code>{session.session_id}</code>"
+                    )
+                    try:
+                        owner_id = getattr(c.telegram, "owner_chat_id", None)
+                        if owner_id:
+                            Thread(target=c.telegram.bot.send_message,
+                                   args=(owner_id, tg_note),
+                                   daemon=True).start()
+                    except Exception:
+                        pass
+
             except Exception as ex:
-                logger.error(f"Ошибка создания сессии аренды: {ex}")
+                logger.error(f"Ошибка создания сессии: {ex}", exc_info=True)
 
     c.run_handlers(c.post_delivery_handlers, (c, e))
 
@@ -984,8 +1117,45 @@ BIND_TO_POST_LOTS_RAISE = [send_categories_raised_notification_handler]
 
 # BIND_TO_ORDERS_LIST_CHANGED = [update_profiles_handler]
 
+def register_purchase_on_order_handler(c: Cardinal, e: NewOrderEvent, *args):
+    """
+    Регистрирует покупку в purchase_checker при ЛЮБОМ новом заказе.
+    Это нужно чтобы !code работал даже если лот не настроен в auto_delivery.cfg.
+    Привязка к Steam-аккаунту делается по имени лота: ищем shared_secret с совпадающим steam_login.
+    """
+    try:
+        pc = purchase_checker.get_purchase_checker()
+        if not pc:
+            return
+        pc.add_purchase(e.order.chat_id, e.order.buyer_username)
+
+        # Пытаемся определить Steam-аккаунт по лоту — ищем в shared_secrets.cfg
+        if not pc.get_account_for_chat(e.order.chat_id):
+            import configparser as _cp
+            _ss = _cp.ConfigParser()
+            _ss.read("configs/shared_secrets.cfg", encoding="utf-8")
+            # Если только один аккаунт — привязываем его сразу
+            sections = _ss.sections()
+            if len(sections) == 1:
+                pc.set_account_for_chat(e.order.chat_id, sections[0])
+                logger.info(f"Авто-привязка {e.order.buyer_username} → {sections[0]} (единственный аккаунт)")
+            elif len(sections) > 1:
+                # Ищем совпадение имени аккаунта в описании лота
+                lot_lower = e.order.description.lower()
+                for sec in sections:
+                    uname = _ss[sec].get("username", sec).lower()
+                    if uname in lot_lower:
+                        pc.set_account_for_chat(e.order.chat_id, sec)
+                        logger.info(f"Привязка {e.order.buyer_username} → {sec} по имени в лоте")
+                        break
+    except Exception as _ex:
+        logger.error(f"register_purchase_on_order_handler: {_ex}")
+
+
 BIND_TO_NEW_ORDER = [log_new_order_handler, setup_event_attributes_handler,
-                     send_new_order_notification_handler, deliver_product_handler,
+                     send_new_order_notification_handler,
+                     register_purchase_on_order_handler,
+                     deliver_product_handler,
                      update_profiles_handler]
 
 BIND_TO_ORDER_STATUS_CHANGED = [send_thank_u_message_handler, send_order_confirmed_notification_handler]

@@ -67,11 +67,7 @@ class PurchaseChecker:
     def can_request_code(self, chat_id: int, username: str) -> tuple[bool, str]:
         """
         Проверяет, может ли пользователь запросить Guard код.
-        Лимита попыток нет — отказ только если не было покупки.
-
-        :param chat_id: ID чата покупателя
-        :param username: ник покупателя
-        :return: (разрешено, сообщение об ошибке)
+        Отказ если: нет покупки, или !code отозван (истекла аренда / оффлайн подтверждён).
         """
         if not self.can_get_guard_code(chat_id, username):
             return (
@@ -79,6 +75,29 @@ class PurchaseChecker:
                 "❌ Код Steam Guard доступен только после покупки товара.\n"
                 "Если вы уже купили — обратитесь к продавцу.",
             )
+        # Проверяем сессию — не истекла ли / не отозван ли !code
+        try:
+            from rental_system import get_rental_manager
+            rm = get_rental_manager()
+            if rm:
+                session = rm.get_active_session_for_chat(chat_id)
+                if session is None:
+                    # Нет активной сессии — ищем завершённую с отозванным кодом
+                    for s in rm.sessions.values():
+                        if str(s.user_id) == str(chat_id) and s.code_revoked:
+                            return (
+                                False,
+                                "⏰ Ваша сессия завершена — доступ к коду Steam Guard закрыт.\n"
+                                "Для продолжения оформите новую покупку.",
+                            )
+                elif session.code_revoked:
+                    return (
+                        False,
+                        "⏰ Ваша сессия завершена — доступ к коду Steam Guard закрыт.\n"
+                        "Для продолжения оформите новую покупку.",
+                    )
+        except Exception:
+            pass
         return True, ""
 
     def record_code_attempt(self, chat_id: int, username: str) -> int:

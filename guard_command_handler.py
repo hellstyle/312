@@ -82,6 +82,22 @@ def handle_guard_code_command(c: Cardinal, e: NewMessageEvent | LastChatMessageC
                 code = gh.get_guard_code_for_account(bound_account)
             if not code:
                 code = gh.get_guard_code(username)
+
+            if code and not code.startswith("❌"):
+                # ── Запускаем таймер оффлайн-сессии при первом !code ──────
+                try:
+                    from rental_system import get_rental_manager
+                    rm = get_rental_manager()
+                    if rm:
+                        sess = rm.get_active_session_for_chat(chat_id)
+                        if sess and sess.is_offline and sess.offline_code_used_at is None:
+                            sess.mark_offline_code_used()
+                            rm.save_sessions()
+                        elif sess and sess.is_rental and sess.rental_code_used_at is None:
+                            sess.mark_rental_code_used()
+                            rm.save_sessions()
+                except Exception:
+                    pass
             if code and not code.startswith("❌"):
                 response_text = (
                     f"🔑 Код Steam Guard: <code>{code}</code>\n"

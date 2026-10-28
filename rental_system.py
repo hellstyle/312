@@ -17,57 +17,119 @@ logger = logging.getLogger("RentalSystem")
 
 
 class RentalSession:
-    """Класс для хранения информации о сессии аренды."""
-    
-    def __init__(self, session_id: str, user_id: str, game_name: str, 
+    """Класс для хранения информации о сессии."""
+
+    SESSION_TYPE_RENTAL  = "rental"   # аренда — таймер с !downloaded
+    SESSION_TYPE_OFFLINE = "offline"  # оффлайн активация — 2 ч с первого !code
+
+    def __init__(self, session_id: str, user_id: str, game_name: str,
                  account_name: str, duration_hours: int, start_time: float = None,
                  steam_login: str = None, steamid: str = None,
-                 profile_baseline: dict = None):
+                 profile_baseline: dict = None,
+                 session_type: str = None):
         self.session_id = session_id
-        self.user_id = user_id  # FunPay user ID
+        self.user_id = user_id
         self.game_name = game_name
         self.account_name = account_name
-        # Реальный Steam-аккаунт аренды (привязка к shared_secret / файлу товара).
-        # account_name раньше = юзернейм ФП-бота — это был баг; steam_login чинит его.
         self.steam_login = steam_login or account_name
-        self.steamid = steamid  # steamid64 (опц., для мониторинга профиля)
-        self.profile_baseline = profile_baseline  # эталон профиля (опц.)
+        self.steamid = steamid
+        self.profile_baseline = profile_baseline
         self.duration_hours = duration_hours
+        self.session_type = session_type or self.SESSION_TYPE_RENTAL
         self.start_time = start_time if start_time else time.time()
         self.end_time = self.start_time + (duration_hours * 3600)
         self.active = True
-        self.game_downloaded = False  # Игрок скачал игру
-        self.game_selected = False  # Игрок выбрал игру
-        self.notification_sent = False  # Уведомление об окончании отправлено
-    
+        self.game_downloaded = False
+        self.game_selected = False
+        self.notification_sent = False
+        # Для оффлайн: момент первого использования !code (запускает 2-часовой таймер)
+        self.offline_code_used_at: float | None = None
+        # Для оффлайн: флаг — человек подтвердил переход в оффлайн, !code больше недоступен
+        self.offline_confirmed: bool = False
+        # Для аренды: момент первого !code (запускает 1.5-часовой таймер на скачивание)
+        self.rental_code_used_at: float | None = None
+        # Таймаут на скачивание для аренды (секунды), 0 = без ограничения
+        self.download_timeout_secs: int = int(1.5 * 3600)  # 1.5 ч
+        # !code заблокирован для этой сессии (после истечения/подтверждения)
+        self.code_revoked: bool = False
+
+    @property
+    def is_offline(self) -> bool:
+        return self.session_type == self.SESSION_TYPE_OFFLINE
+
+    @property
+    def is_rental(self) -> bool:
+        return self.session_type == self.SESSION_TYPE_RENTAL
+
     def is_expired(self) -> bool:
         """Проверяет, истекла ли сессия."""
+        if self.is_offline:
+            if self.offline_code_used_at is None:
+                return False  # оффлайн-таймер ещё не запущен
+            return time.time() > self.offline_code_used_at + self.duration_hours * 3600
+        # Для аренды: если таймер скачивания запущен и не скачали — истекла
+        if self.is_rental and self.rental_code_used_at and not self.game_downloaded:
+            if time.time() > self.rental_code_used_at + self.download_timeout_secs:
+                return True
         return time.time() > self.end_time
-    
+
+    def is_download_timeout(self) -> bool:
+        """Истёк ли таймер скачивания (только для аренды)."""
+        if not self.is_rental or not self.rental_code_used_at or self.game_downloaded:
+            return False
+        return time.time() > self.rental_code_used_at + self.download_timeout_secs
+
+    def download_timeout_remaining(self) -> int:
+        """Оставшееся время на скачивание в секундах (только для аренды)."""
+        if not self.rental_code_used_at or self.game_downloaded:
+            return 0
+        remaining = (self.rental_code_used_at + self.download_timeout_secs) - time.time()
+        return max(0, int(remaining))
+
     def get_remaining_time(self) -> int:
         """Возвращает оставшееся время в секундах."""
-        remaining = self.end_time - time.time()
+        if self.is_offline:
+            if self.offline_code_used_at is None:
+                return int(self.duration_hours * 3600)
+            remaining = (self.offline_code_used_at + self.duration_hours * 3600) - time.time()
+        else:
+            remaining = self.end_time - time.time()
         return max(0, int(remaining))
-    
+
     def get_remaining_hours(self) -> float:
-        """Возвращает оставшееся время в часах."""
         return self.get_remaining_time() / 3600
-    
+
     def mark_game_downloaded(self):
-        """Отмечает, что игра скачана - начинается отсчет времени."""
+        """Отмечает, что игра скачана — запускает таймер аренды."""
         if not self.game_downloaded:
             self.game_downloaded = True
-            self.start_time = time.time()  # Перезапускаем отсчет времени
+            self.start_time = time.time()
             self.end_time = self.start_time + (self.duration_hours * 3600)
-            logger.info(f"Сессия {self.session_id}: игра скачана, время обновлено")
-    
+            logger.info(f"Сессия {self.session_id}: игра скачана, таймер запущен")
+
     def mark_game_selected(self):
-        """Отмечает, что игра выбрана."""
         self.game_selected = True
         logger.info(f"Сессия {self.session_id}: игра {self.game_name} выбрана")
-    
+
+    def mark_offline_code_used(self):
+        """Первое использование !code в оффлайн-сессии — запускает 2-ч таймер."""
+        if self.offline_code_used_at is None:
+            self.offline_code_used_at = time.time()
+            self.end_time = self.offline_code_used_at + self.duration_hours * 3600
+            logger.info(f"Сессия {self.session_id} (offline): первый !code, таймер запущен")
+
+    def mark_rental_code_used(self):
+        """Первое использование !code в аренде — запускает таймер на скачивание."""
+        if self.rental_code_used_at is None:
+            self.rental_code_used_at = time.time()
+            logger.info(f"Сессия {self.session_id} (rental): первый !code, таймер скачивания запущен")
+
+    def revoke_code(self):
+        """Отзывает доступ к !code для этой сессии."""
+        self.code_revoked = True
+        logger.info(f"Сессия {self.session_id}: !code отозван")
+
     def to_dict(self) -> dict:
-        """Сонвертирует сессию в словарь для сохранения."""
         return {
             'session_id': self.session_id,
             'user_id': self.user_id,
@@ -76,18 +138,23 @@ class RentalSession:
             'steam_login': self.steam_login,
             'steamid': self.steamid,
             'profile_baseline': self.profile_baseline,
+            'session_type': self.session_type,
             'duration_hours': self.duration_hours,
             'start_time': self.start_time,
             'end_time': self.end_time,
             'active': self.active,
             'game_downloaded': self.game_downloaded,
             'game_selected': self.game_selected,
-            'notification_sent': self.notification_sent
+            'notification_sent': self.notification_sent,
+            'offline_code_used_at': self.offline_code_used_at,
+            'offline_confirmed': self.offline_confirmed,
+            'code_revoked': self.code_revoked,
+            'rental_code_used_at': self.rental_code_used_at,
+            'download_timeout_secs': self.download_timeout_secs,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> 'RentalSession':
-        """Создает сессию из словаря."""
         session = cls(
             data['session_id'],
             data['user_id'],
@@ -98,12 +165,18 @@ class RentalSession:
             steam_login=data.get('steam_login'),
             steamid=data.get('steamid'),
             profile_baseline=data.get('profile_baseline'),
+            session_type=data.get('session_type', cls.SESSION_TYPE_RENTAL),
         )
         session.end_time = data['end_time']
         session.active = data['active']
         session.game_downloaded = data['game_downloaded']
         session.game_selected = data['game_selected']
         session.notification_sent = data['notification_sent']
+        session.offline_code_used_at = data.get('offline_code_used_at')
+        session.offline_confirmed = data.get('offline_confirmed', False)
+        session.code_revoked = data.get('code_revoked', False)
+        session.rental_code_used_at = data.get('rental_code_used_at')
+        session.download_timeout_secs = data.get('download_timeout_secs', int(1.5 * 3600))
         return session
 
 
@@ -130,16 +203,20 @@ class RentalManager:
         self.load_sessions()
         self.load_credentials()
     
-    def create_session(self, user_id: str, game_name: str, account_name: str, 
+    def create_session(self, user_id: str, game_name: str, account_name: str,
                       duration_hours: int, steam_login: str = None,
                       steam_password: str = None, steamid: str = None,
-                      profile_baseline: dict = None) -> RentalSession:
-        """Создает новую сессию аренды."""
+                      profile_baseline: dict = None,
+                      session_type: str = None) -> RentalSession:
+        """Создает новую сессию."""
         with self.lock:
             session_id = f"{user_id}_{game_name}_{int(time.time())}"
-            session = RentalSession(session_id, user_id, game_name, account_name,
-                                      duration_hours, steam_login=steam_login,
-                                      steamid=steamid, profile_baseline=profile_baseline)
+            session = RentalSession(
+                session_id, user_id, game_name, account_name, duration_hours,
+                steam_login=steam_login, steamid=steamid,
+                profile_baseline=profile_baseline,
+                session_type=session_type or RentalSession.SESSION_TYPE_RENTAL,
+            )
             
             self.sessions[session_id] = session
             
@@ -277,6 +354,15 @@ class RentalManager:
         except Exception as e:
             logger.error(f"Ошибка загрузки сессий: {e}")
     
+    def get_active_session_for_chat(self, chat_id: int | str) -> 'RentalSession | None':
+        """Возвращает активную (незавершённую) сессию для чата или None."""
+        with self.lock:
+            sid = str(chat_id)
+            for s in self.sessions.values():
+                if str(s.user_id) == sid and s.active:
+                    return s
+        return None
+
     def store_credential(self, session_id: str, steam_login: str, steam_password: str):
         """Сохраняет пароль Steam-аккаунта для сессии (отдельный файл)."""
         self.credentials[session_id] = {"steam_login": steam_login, "steam_password": steam_password}
