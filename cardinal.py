@@ -345,6 +345,9 @@ class Cardinal(object):
                     logger.warning(_("crd_raise_time_err", subcat.category.name, error_text,
                                      cardinal_tools.time_to_str(e.wait_time)))
                     wait_time = e.wait_time
+                    self.run_handlers(self.post_lots_raise_handlers,
+                                      (self, subcat.category, error_text, False,
+                                       cardinal_tools.time_to_str(e.wait_time)))
                 else:
                     logger.error(_("crd_raise_unexpected_err", subcat.category.name))
                     time.sleep(10)
@@ -364,7 +367,8 @@ class Cardinal(object):
             self.raise_time[subcat.category.id] = next_time
             next_call = next_time if next_time < next_call else next_call
             if raise_ok:
-                self.run_handlers(self.post_lots_raise_handlers, (self, subcat.category, error_text + time_delta))
+                self.run_handlers(self.post_lots_raise_handlers,
+                                  (self, subcat.category, error_text + time_delta, True, ""))
         return next_call if next_call < float("inf") else 10
 
     def get_order_from_object(self, obj: types.OrderShortcut | types.Message | types.ChatShortcut,

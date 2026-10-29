@@ -473,14 +473,22 @@ def test_auto_delivery_handler(c: Cardinal, e: NewMessageEvent | LastChatMessage
     c.run_handlers(c.new_order_handlers, (c, fake_event,))
 
 
-def send_categories_raised_notification_handler(c: Cardinal, cat: types.Category, error_text: str = "") -> None:
+def send_categories_raised_notification_handler(c: Cardinal, cat: types.Category, error_text: str = "",
+                                                success: bool = True, wait_str: str = "") -> None:
     """
-    Отправляет уведомление о поднятии лотов в Telegram.
+    Отправляет уведомление о поднятии лотов (или об ошибке таймера) в Telegram.
     """
     if not c.telegram:
         return
 
-    text = f"""⤴️<b><i>Поднял все лоты категории</i></b> <code>{cat.name}</code>\n<tg-spoiler>{error_text}</tg-spoiler>"""  # locale
+    if success:
+        text = (f"⤴️ <b>Поднял лоты категории</b> <code>{cat.name}</code>\n"
+                f"<tg-spoiler>{error_text}</tg-spoiler>")
+    else:
+        text = (f"⏳ <b>Не удалось поднять</b> <code>{cat.name}</code>\n"
+                f"FunPay: <i>{error_text}</i>\n"
+                f"Следующая попытка через <b>{wait_str}</b>")
+
     Thread(target=c.telegram.send_notification,
            args=(text,),
            kwargs={"notification_type": utils.NotificationTypes.lots_raise}, daemon=True).start()
