@@ -169,6 +169,135 @@ def handle_guard_code_command(c: Cardinal, e: NewMessageEvent | LastChatMessageC
             logger.error(f"Ошибка отправки уведомления владельцу: {ex}")
 
 
-# Привязываем хендлер к событиям новых сообщений
-BIND_TO_NEW_MESSAGE = [handle_guard_code_command]
-BIND_TO_LAST_CHAT_MESSAGE_CHANGED = [handle_guard_code_command]
+# Запасная команда выдачи Guard-кода БЕЗ проверок purchase_checker
+# (без требования покупки и без лимита попыток).
+# Измените значение, чтобы задать своё ключевое слово (регистр не важен).
+BACKUP_COMMAND = "!код"
+
+
+def handle_guard_code_backup_command(c: Cardinal, e: NewMessageEvent | LastChatMessageChangedEvent):
+    """Обработчик запасной команды (!код) — выдаёт Steam Guard код БЕЗ проверок
+    purchase_checker (без требования покупки и без лимита попыток)."""
+    if not c.autoresponse_enabled:
+        return
+
+    # Определяем режим работы
+    if not c.old_mode_enabled:
+        if isinstance(e, LastChatMessageChangedEvent):
+            return
+        obj, mtext = e.message, str(e.message)
+        chat_id, chat_name, username = e.message.chat_id, e.message.chat_name, e.message.author
+    else:
+        obj, mtext = e.chat, str(e.chat)
+        chat_id, chat_name, username = obj.id, obj.name, obj.name
+
+    # Пропускаем собственные сообщения
+    if not c.old_mode_enabled and e.message.author == c.account.username:
+        return
+
+    backup_kw = BACKUP_COMMAND.strip().lower()
+    if not backup_kw:
+        return  # запасная команда отключена (пустое значение)
+    if mtext.replace("\n", "").strip().lower() != backup_kw:
+        return
+
+    logger.info(f"Запасная команда {backup_kw} от {username} в чате {chat_name} (без проверок)")
+
+    # Аккаунт по привязке чата (если есть); проверок purchase_checker НЕТ.
+    bound_account = None
+    try:
+        pc_local = get_purchase_checker()
+        if pc_local:
+            bound_account = pc_local.get_account_for_chat(chat_id)
+    except Exception:
+        bound_account = None
+    if bound_account:
+        logger.info(f"{backup_kw}: чат {chat_id} привязан к аккаунту {bound_account}")
+
+    gh = get_guard_handler()
+    code_generated = False
+    code = None
+
+    if gh and gh.enabled:
+        try:
+            if bound_account:
+                code = gh.get_guard_code_for_account(bound_account)
+            if not code:
+                code = gh.get_guard_code(username)
+
+            if code and not code.startswith("❌"):
+                # ── Запускаем таймер оффлайн/аренды при первом запросе кода ──
+                try:
+                    from rental_system import get_rental_manager
+                    rm = get_rental_manager()
+                    if rm:
+                        sess = rm.get_active_session_for_chat(chat_id)
+                        if sess and sess.is_offline and sess.offline_code_used_at is None:
+                            sess.mark_offline_code_used()
+                            try:
+                                rm.save_sessions()
+                            except Exception as _se:
+                                logger.error(f"{backup_kw}: offline timer: {_se}")
+                        elif sess and sess.is_rental and sess.rental_code_used_at is None:
+                            sess.mark_rental_code_used()
+                            try:
+                                rm.save_sessions()
+                            except Exception as _se:
+                                logger.error(f"{backup_kw}: rental timer: {_se}")
+                except Exception:
+                    pass
+                response_text = (
+                    f"🔑 Код Steam Guard: <code>{code}</code>\n"
+                    f"⏱ Действителен ~30 секунд"
+                )
+                code_generated = True
+            else:
+                if gh.use_shared_secret:
+                    response_text = (
+                        "⏳ Код не может быть сгенерирован (shared_secret).\n"
+                        "Убедитесь, что аккаунт добавлен в систему."
+                    )
+                else:
+                    response_text = (
+                        "⏳ Код ещё не пришёл на почту.\n"
+                        "Попробуйте через 15–30 секунд — коды обновляются автоматически."
+                    )
+        except Exception as ex:
+            logger.error(f"Ошибка получения Guard кода (запасная команда): {ex}")
+            response_text = (
+                "❌ Ошибка при получении кода Steam Guard. "
+                "Попробуйте через 30 секунд или обратитесь к продавцу."
+            )
+    else:
+        response_text = (
+            "❌ Система Steam Guard не настроена. "
+            "Обратитесь к продавцу для получения кода вручную."
+        )
+
+    Thread(target=c.send_message, args=(chat_id, response_text, chat_name), daemon=True).start()
+
+    # --- Отправка уведомления владельцу (видно, что код выдан без проверок) ---
+    if code_generated and c.telegram and c.telegram.bot:
+        try:
+            owner_message = (
+                f"🔔 Guard код (запасная команда, без проверок)\n\n"
+                f"👤 Пользователь: {username}\n"
+                f"💬 Чат: {chat_name}\n"
+                f"🔑 Код: {code}\n"
+                f"⏱ Действителен ~30 секунд\n"
+                f"🆔 Chat ID: {chat_id}"
+            )
+            if c.telegram.owner_chat_id:
+                Thread(target=c.telegram.bot.send_message,
+                       args=(c.telegram.owner_chat_id, owner_message),
+                       daemon=True).start()
+                logger.info(f"Запасная команда: уведомление владельцу: {username} -> {code}")
+            else:
+                logger.info(f"BACKUP GUARD CODE: {username} -> {code} (Chat ID: {chat_id})")
+        except Exception as ex:
+            logger.error(f"Ошибка отправки уведомления владельцу (запасная команда): {ex}")
+
+
+# Привязываем хендлеры к событиям новых сообщений
+BIND_TO_NEW_MESSAGE = [handle_guard_code_command, handle_guard_code_backup_command]
+BIND_TO_LAST_CHAT_MESSAGE_CHANGED = [handle_guard_code_command, handle_guard_code_backup_command]
