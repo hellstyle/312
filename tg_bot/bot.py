@@ -1770,7 +1770,10 @@ class TGBot:
         while True:
             try:
                 logger.info(_("log_tg_started", self.bot.user.username))
-                self.bot.infinity_polling(logger_level=logging.DEBUG)
+                self.bot.infinity_polling(logger_level=logging.DEBUG,
+                                          timeout=20, long_polling_timeout=20,
+                                          allowed_updates=["message", "callback_query", "chat_member"],
+                                          skip_pending=True)
             except:
                 k_err += 1
                 logger.error(_("log_tg_update_error", k_err))
