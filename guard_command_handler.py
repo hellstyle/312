@@ -123,7 +123,7 @@ def handle_guard_code_command(c: Cardinal, e: NewMessageEvent | LastChatMessageC
                     pass
             if code and not code.startswith("❌"):
                 response_text = (
-                    f"🔑 Код Steam Guard: <code>{code}</code>\n"
+                    f"🔑 Код Steam Guard: {code}\n"
                     f"⏱ Действителен ~30 секунд{attempts_line}"
                 )
                 code_generated = True
