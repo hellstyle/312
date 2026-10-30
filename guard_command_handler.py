@@ -46,18 +46,35 @@ def handle_guard_code_command(c: Cardinal, e: NewMessageEvent | LastChatMessageC
 
     logger.info(f"Команда !code от {username} в чате {chat_name}")
 
-    # --- Проверка лимита попыток через purchase_checker ---
+    attempts_line = ""
+
+    # --- Проверяем только отозванный код (истечение аренды) — без проверки факта покупки ---
     pc = get_purchase_checker()
     if pc:
-        can_request, deny_message = pc.can_request_code(chat_id, username)
-        if not can_request:
-            Thread(target=c.send_message, args=(chat_id, deny_message, chat_name), daemon=True).start()
-            return
-        pc.record_code_attempt(chat_id, username)
-        remaining = pc.get_remaining_attempts(chat_id)
-        attempts_line = f"\n📊 Осталось попыток: {'∞' if remaining == -1 else remaining}"
-    else:
-        attempts_line = ""
+        try:
+            from rental_system import get_rental_manager
+            rm = get_rental_manager()
+            if rm:
+                session = rm.get_active_session_for_chat(chat_id)
+                if session is None:
+                    # Проверяем завершённые сессии с отозванным кодом
+                    for s in rm.sessions.values():
+                        if str(s.user_id) == str(chat_id) and s.code_revoked:
+                            deny_msg = (
+                                "⏰ Ваша сессия завершена — доступ к коду Steam Guard закрыт.\n"
+                                "Для продолжения оформите новую покупку."
+                            )
+                            Thread(target=c.send_message, args=(chat_id, deny_msg, chat_name), daemon=True).start()
+                            return
+                elif session.code_revoked:
+                    deny_msg = (
+                        "⏰ Ваша сессия завершена — доступ к коду Steam Guard закрыт.\n"
+                        "Для продолжения оформите новую покупку."
+                    )
+                    Thread(target=c.send_message, args=(chat_id, deny_msg, chat_name), daemon=True).start()
+                    return
+        except Exception:
+            pass
 
     # --- Попытка получить Guard код через Guard систему (Gmail или shared_secret) ---
     gh = get_guard_handler()
@@ -151,7 +168,6 @@ def handle_guard_code_command(c: Cardinal, e: NewMessageEvent | LastChatMessageC
                 f"💬 Чат: {chat_name}\n"
                 f"🔑 Код: {code}\n"
                 f"⏱ Действителен ~30 секунд\n"
-                f"📊 Осталось попыток: {'∞' if remaining == -1 else remaining}\n"
                 f"🆔 Chat ID: {chat_id}"
             )
             
@@ -163,7 +179,7 @@ def handle_guard_code_command(c: Cardinal, e: NewMessageEvent | LastChatMessageC
                 logger.info(f"Уведомление о Guard коде отправлено владельцу: {username} -> {code}")
             else:
                 # Если owner_chat_id не указан, отправляем в лог
-                logger.info(f"GUARD CODE GENERATED: {username} -> {code} (Remaining: {remaining})")
+                logger.info(f"GUARD CODE GENERATED: {username} -> {code}")
                 
         except Exception as ex:
             logger.error(f"Ошибка отправки уведомления владельцу: {ex}")

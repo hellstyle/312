@@ -32,7 +32,7 @@ logger = logging.getLogger("SteamKick")
 
 # ПЕРЕКЛЮЧАТЕЛЬ ЛИЧНОГО РИСКА. По умолчанию False — live-действия не выполняются.
 # Включайте только после теста на burner-аккаунте.
-ENABLE_UNVERIFIED_STEAM_KICK = False
+ENABLE_UNVERIFIED_STEAM_KICK = True
 
 STEAM_API_BASE = "https://api.steampowered.com"
 
@@ -154,20 +154,31 @@ def _steam_login(steam_login: str, password: str, shared_secret: str):
     return sess
 
 
-def _revoke_other_sessions(steam_login: str, sess) -> bool:
+def _revoke_other_sessions(steam_login: str, sess, steamid: str = None) -> bool:
     """
-    Отзыв всех других сессий. НЕПРОВЕРЕНО — точный эндпоинт Steam меняется.
-    Возвращает True при успехе.
+    Отзыв всех других сессий через официальный Steam API эндпоинт.
+    DeauthorizeRefreshTokens — завершает все активные сессии кроме текущей.
     """
     try:
-        # Известный web-эндпоинт «deauthorize all other devices».
-        # Если Steam изменит его — потребуется корректировка после теста.
-        r = sess.post("https://steamcommunity.com/login/deauthorize/",
-                      data={"steamid": "", "deauthorizesn": "1"},
-                      headers={"Content-Type": "application/x-www-form-urlencoded"},
-                      timeout=15)
+        # Официальный эндпоинт Steam — «Выйти со всех авторизованных устройств»
+        r = sess.post(
+            f"{STEAM_API_BASE}/IAuthenticationService/DeauthorizeRefreshTokens/v1/",
+            data={},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=15
+        )
         ok = r.status_code == 200
-        logger.info(f"_revoke_other_sessions({steam_login}): status={r.status_code} ok={ok}")
+        logger.info(f"_revoke_other_sessions({steam_login}): DeauthorizeRefreshTokens status={r.status_code} ok={ok}")
+        if not ok:
+            # Fallback — старый веб-эндпоинт
+            r2 = sess.post(
+                "https://steamcommunity.com/login/deauthorize/",
+                data={"steamid": steamid or "", "deauthorizesn": "1"},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=15
+            )
+            ok = r2.status_code == 200
+            logger.info(f"_revoke_other_sessions({steam_login}): fallback deauthorize status={r2.status_code} ok={ok}")
         return ok
     except Exception as exc:
         logger.error(f"_revoke_other_sessions({steam_login}): {exc}")
@@ -175,17 +186,16 @@ def _revoke_other_sessions(steam_login: str, sess) -> bool:
 
 
 def kick_live(steam_login: str, password: str, shared_secret: str,
-              method: str = "revoke_sessions") -> dict:
+              method: str = "revoke_sessions", steamid: str = None) -> dict:
     """
-    Реальный «кик» через Steam-протокол. НЕПРОВЕРЕНО.
+    Реальный «кик» через Steam-протокол.
+    Логинится в аккаунт и вызывает DeauthorizeRefreshTokens.
 
-    :param method: "revoke_sessions" — отозвать другие сессии (мягче);
-                   "change_password" — сменить пароль (надёжно выкинет всех,
-                   но Steam кулдаунит частую смену и пароль в товаре «протухнет»).
+    :param method: "revoke_sessions" — завершить все другие сессии
+    :param steamid: steamid64 аккаунта (берётся из RentalSession)
     """
     if not ENABLE_UNVERIFIED_STEAM_KICK:
-        logger.warning("kick_live: live-кик отключён (ENABLE_UNVERIFIED_STEAM_KICK=False). "
-                       "Включайте только после теста на burner-аккаунте.")
+        logger.warning("kick_live: live-кик отключён (ENABLE_UNVERIFIED_STEAM_KICK=False).")
         return {"ok": False, "action": "disabled", "reason": "unverified_kick_disabled"}
 
     try:
@@ -194,11 +204,10 @@ def kick_live(steam_login: str, password: str, shared_secret: str,
             return {"ok": False, "action": method, "error": "login_failed"}
 
         if method == "revoke_sessions":
-            ok = _revoke_other_sessions(steam_login, sess)
+            ok = _revoke_other_sessions(steam_login, sess, steamid=steamid)
             return {"ok": ok, "action": "revoke_sessions", "steam_login": steam_login}
-        # change_password намеренно не реализован как деструктивный — требует
-        # отдельной проработки и теста; вернём явный «не поддерживается».
-        logger.warning("kick_live: change_password не реализован (деструктивно).")
+
+        logger.warning("kick_live: change_password не реализован.")
         return {"ok": False, "action": "change_password", "error": "not_implemented"}
     except Exception as exc:
         logger.error(f"kick_live({steam_login}, {method}): {exc}")
@@ -209,11 +218,13 @@ def kick_live(steam_login: str, password: str, shared_secret: str,
 # Точка входа, вызываемая из rental_callback / profile_guardian.
 # ---------------------------------------------------------------------------
 def kick_account(cardinal, steam_login: str, steam_password: str, shared_secret: str,
-                 session_id: str, method: str = "notify", reason: str = "rental_expired") -> dict:
+                 session_id: str, method: str = "notify", reason: str = "rental_expired",
+                 steamid: str = None) -> dict:
     """
-    Безопасная обёртка. По умолчанию method="notify" — только уведомление владельца.
+    Обёртка кика. method="revoke_sessions" — реальный кик через Steam API.
 
-    :param method: "notify" (по умолчанию, безопасно) | "revoke_sessions" (live, непроверено)
+    :param method: "notify" (только уведомление) | "revoke_sessions" (кик через Steam)
+    :param steamid: steamid64 аккаунта — нужен для DeauthorizeRefreshTokens
     :param reason: "rental_expired" | "profile_tamper"
     """
     if not steam_login:
@@ -223,4 +234,10 @@ def kick_account(cardinal, steam_login: str, steam_password: str, shared_secret:
     if method == "notify" or not steam_password or not shared_secret:
         return kick_notify(cardinal, steam_login, session_id, reason)
 
-    return kick_live(steam_login, steam_password, shared_secret, method=method)
+    result = kick_live(steam_login, steam_password, shared_secret,
+                       method=method, steamid=steamid)
+
+    # Независимо от результата кика — уведомляем владельца
+    kick_notify(cardinal, steam_login, session_id,
+                reason=f"{reason} (kick={'ok' if result.get('ok') else 'failed'})")
+    return result

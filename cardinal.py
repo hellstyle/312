@@ -752,7 +752,8 @@ class Cardinal(object):
                             from steam_kick import kick_account
                             kick_account(self, session.steam_login, password, shared,
                                          session.session_id, method=method,
-                                         reason="rental_expired")
+                                         reason="rental_expired",
+                                         steamid=getattr(session, "steamid", None))
                         rental_manager.delete_credential(session.session_id)
                     except Exception as e:
                         logger.error(f"rental_callback: {e}")
