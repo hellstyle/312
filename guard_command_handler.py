@@ -41,11 +41,11 @@ def handle_guard_code_command(c: Cardinal, e: NewMessageEvent | LastChatMessageC
     if not c.old_mode_enabled and e.message.author == c.account.username:
         return
 
-    # Реагируем только на команду /code (аккаунт 1 — основной)
-    if mtext.replace("\n", "").strip().lower() != "/code":
+    # Реагируем на /code и !code (оба → аккаунт 1, основной)
+    if mtext.replace("\n", "").strip().lower() not in ("/code", "!code"):
         return
 
-    logger.info(f"Команда /code от {username} в чате {chat_name}")
+    logger.info(f"Команда /code (!code) от {username} в чате {chat_name}")
 
     attempts_line = ""
 
