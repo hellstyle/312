@@ -77,8 +77,9 @@ def _rsa_encrypt_password(password: str, mod_b64: str, exp_b64: str) -> str:
         from cryptography.hazmat.primitives.asymmetric import padding, rsa
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.backends import default_backend
-        n = int.from_bytes(base64.b64decode(mod_b64), "big")
-        e = int.from_bytes(base64.b64decode(exp_b64), "big")
+        # Steam возвращает mod и exp в HEX, не в base64
+        n = int(mod_b64, 16)
+        e = int(exp_b64, 16)
         pub = rsa.RSAPublicNumbers(e, n).public_key(default_backend())
         encrypted = pub.encrypt(password.encode("utf-8"), padding.PKCS1v15())
         return base64.b64encode(encrypted).decode("ascii")
