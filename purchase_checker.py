@@ -21,6 +21,7 @@ class PurchaseChecker:
         self.cardinal = cardinal
         self.purchased_chat_ids: Set[int] = set()
         self.account_for_chat: dict[int, str] = {}
+        self.purchase_count: dict[int, int] = {}   # chat_id -> кол-во покупок (для скидки)
         self._persistence_path = "storage/purchase_registry.json"
         self._load()
 
@@ -33,6 +34,7 @@ class PurchaseChecker:
                     data = json.load(f)
                 self.purchased_chat_ids = set(int(x) for x in data.get("chat_ids", []))
                 self.account_for_chat = {int(k): v for k, v in data.get("account_for_chat", {}).items()}
+                self.purchase_count = {int(k): v for k, v in data.get("purchase_count", {}).items()}
                 logger.info(f"PurchaseChecker: загружено {len(self.purchased_chat_ids)} покупок")
         except Exception as e:
             logger.error(f"PurchaseChecker._load: {e}")
@@ -46,6 +48,7 @@ class PurchaseChecker:
                 json.dump({
                     "chat_ids": list(self.purchased_chat_ids),
                     "account_for_chat": {str(k): v for k, v in self.account_for_chat.items()},
+                    "purchase_count": {str(k): v for k, v in self.purchase_count.items()},
                 }, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"PurchaseChecker._save: {e}")
@@ -70,8 +73,18 @@ class PurchaseChecker:
         :param username: ник покупателя
         """
         self.purchased_chat_ids.add(chat_id)
+        self.purchase_count[chat_id] = self.purchase_count.get(chat_id, 0) + 1
         self._save()
-        logger.info(f"PurchaseChecker: покупка зарегистрирована — {username} (chat_id: {chat_id})")
+        logger.info(f"PurchaseChecker: покупка зарегистрирована — {username} (chat_id: {chat_id}, "
+                    f"всего покупок: {self.purchase_count[chat_id]})")
+
+    def get_purchase_count(self, chat_id: int) -> int:
+        """Возвращает количество покупок пользователя."""
+        return self.purchase_count.get(chat_id, 0)
+
+    def is_loyal_customer(self, chat_id: int) -> bool:
+        """Возвращает True если у пользователя 2+ покупки (скидка 10%)."""
+        return self.get_purchase_count(chat_id) >= 2
 
     # ------------------------------------------------------------------
     # Проверка доступа к Guard коду

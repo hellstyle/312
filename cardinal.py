@@ -731,8 +731,21 @@ class Cardinal(object):
                             msg = (
                                 f"⏰ Время аренды <b>{session.game_name}</b> истекло.\n"
                                 f"🔒 Доступ к коду Steam Guard закрыт.\n\n"
-                                f"Хотите продолжить? Оформите новую покупку."
+                                f"Хотите продолжить? Оформите новую покупку.\n"
+                                f"⚠️ Продления не предусмотрено — только новая покупка."
                             )
+                            # Скидка 10% для постоянных покупателей (2+ покупки)
+                            try:
+                                from purchase_checker import get_purchase_checker as _gpc
+                                _pc = _gpc()
+                                if _pc and _pc.is_loyal_customer(int(session.user_id)):
+                                    msg += (
+                                        f"\n\n🎁 <b>Скидка 10% для постоянных клиентов!</b>\n"
+                                        f"Вы уже покупали у нас — при следующей покупке "
+                                        f"вы получите скидку 10%."
+                                    )
+                            except Exception:
+                                pass
                         try:
                             self.send_message(chat_id, msg, watermark=False)
                         except Exception:
@@ -748,6 +761,10 @@ class Cardinal(object):
                             shared = _cfg[session.steam_login].get("shared_secret", "") \
                                 if session.steam_login in _cfg.sections() else ""
                             password = rental_manager.get_credential(session.session_id) or ""
+                            # Fallback: если пароль не пришёл из auto_delivery.cfg —
+                            # берём статичный из shared_secrets.cfg (поле password)
+                            if not password and session.steam_login in _cfg.sections():
+                                password = _cfg[session.steam_login].get("password", "")
                             method = kick_method if auto_kick else "notify"
                             from steam_kick import kick_account
                             kick_account(self, session.steam_login, password, shared,

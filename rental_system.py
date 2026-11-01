@@ -52,6 +52,7 @@ class RentalSession:
         self.download_timeout_secs: int = int(1.5 * 3600)  # 1.5 ч
         # !code заблокирован для этой сессии (после истечения/подтверждения)
         self.code_revoked: bool = False
+        self.warning_30_sent: bool = False  # флаг предупреждения за 30 мин
 
     @property
     def is_offline(self) -> bool:
@@ -152,6 +153,7 @@ class RentalSession:
             'offline_code_used_at': self.offline_code_used_at,
             'offline_confirmed': self.offline_confirmed,
             'code_revoked': self.code_revoked,
+            'warning_30_sent': self.warning_30_sent,
             'rental_code_used_at': self.rental_code_used_at,
             'download_timeout_secs': self.download_timeout_secs,
         }
@@ -178,6 +180,7 @@ class RentalSession:
         session.offline_code_used_at = data.get('offline_code_used_at')
         session.offline_confirmed = data.get('offline_confirmed', False)
         session.code_revoked = data.get('code_revoked', False)
+        session.warning_30_sent = data.get('warning_30_sent', False)
         session.rental_code_used_at = data.get('rental_code_used_at')
         session.download_timeout_secs = data.get('download_timeout_secs', int(1.5 * 3600))
         return session

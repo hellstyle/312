@@ -35,6 +35,34 @@ _ = localizer.translate
 telebot.apihelper.ENABLE_MIDDLEWARE = True
 
 
+def _resolve_guard_account_for_command(command: str):
+    """
+    Возвращает username Steam-аккаунта для guard-команды Telegram по shared_secrets.cfg:
+      /code  -> основной (primary), /guard -> codes_account, /login -> coode_account.
+    """
+    import configparser
+    try:
+        cfg = configparser.ConfigParser()
+        cfg.read("configs/shared_secrets.cfg", encoding="utf-8")
+        sections = cfg.sections()
+        if command in ("code", "/code"):
+            for s in sections:
+                if cfg[s].get("primary", "").strip().lower() in ("1", "true", "yes", "on"):
+                    return cfg[s].get("username", s)
+            return cfg[sections[0]].get("username", sections[0]) if len(sections) == 1 else None
+        if command in ("guard", "/guard"):
+            for s in sections:
+                if cfg[s].get("codes_account", "").strip().lower() in ("1", "true", "yes", "on"):
+                    return cfg[s].get("username", s)
+        if command in ("login", "/login"):
+            for s in sections:
+                if cfg[s].get("coode_account", "").strip().lower() in ("1", "true", "yes", "on"):
+                    return cfg[s].get("username", s)
+    except Exception:
+        pass
+    return None
+
+
 class TGBot:
     def __init__(self, cardinal: Cardinal):
         self.cardinal = cardinal
@@ -663,10 +691,14 @@ class TGBot:
         username = m.from_user.username or str(m.from_user.id)
         chat_id = m.chat.id
         user_id = m.from_user.id
-        
+
+        # Какой аккаунт нужен — по команде (/code | /guard | /login)
+        _cmd = (m.text or "").strip().split()[0].lstrip("/").lower() if (m.text or "").strip() else ""
+        account = _resolve_guard_account_for_command(_cmd)
+
         # Проверка на авторизованного пользователя (владельца)
         is_authorized = user_id in self.authorized_users
-        
+
         # Проверка лимита попыток через purchase_checker (пропускаем для владельца)
         pc = get_purchase_checker()
         if pc and not is_authorized:
@@ -681,18 +713,20 @@ class TGBot:
             attempts_line = ""
             if is_authorized:
                 remaining = -1  # Бесконечные попытки для владельца
-        
+
         # Получение Guard кода
         gh = get_guard_handler()
         code_generated = False
-        
+
         if gh and gh.enabled:
             try:
-                code = gh.get_guard_code(username)
+                code = gh.get_guard_code_for_account(account) if account else None
                 if code and not code.startswith("❌"):
+                    _remaining = 30 - (int(time.time()) % 30)
                     response_text = (
                         f"🔑 Код Steam Guard: <code>{code}</code>\n"
-                        f"⏱ Действителен ~30 секунд{attempts_line}"
+                        f"🎮 Аккаунт: {account}\n"
+                        f"⏱ Действителен ещё {_remaining} сек{attempts_line}"
                     )
                     code_generated = True
                 else:
@@ -719,24 +753,100 @@ class TGBot:
                 "❌ Система Steam Guard не настроена. "
                 "Обратитесь к продавцу для получения кода вручную."
             )
-        
+
         self.bot.send_message(chat_id, response_text)
-        
+
         # Отправка уведомления владельцу
         if code_generated and self.owner_chat_id:
             try:
                 owner_message = (
                     f"🔔 Уведомление о Guard коде (TG)\n\n"
                     f"👤 Пользователь: {username}\n"
+                    f"🎮 Команда: /{_cmd} (аккаунт {account})\n"
                     f"🔑 Код: {code}\n"
-                    f"⏱ Действителен ~30 секунд\n"
-                    f"📊 Осталось попыток: {'∞' if remaining == -1 else remaining}\n"
+                    f"⏱ Действителен ещё {_remaining} сек\n"
                     f"🆔 Chat ID: {chat_id}"
                 )
                 self.bot.send_message(self.owner_chat_id, owner_message)
                 logger.info(f"Уведомление о Guard коде отправлено владельцу (TG): {username} -> {code}")
             except Exception as ex:
                 logger.error(f"Ошибка отправки уведомления владельцу: {ex}")
+
+    def tg_kickall(self, m: Message):
+        """
+        Команда /kickall — принудительно выкидывает всех пользователей со всех
+        Steam-аккаунтов из shared_secrets.cfg и завершает все активные сессии аренды.
+        Только для авторизованных владельцев.
+        """
+        if m.from_user.id not in self.authorized_users:
+            self.bot.send_message(m.chat.id, "⛔ Нет доступа.")
+            return
+
+        import configparser
+        from steam_kick import kick_live
+
+        self.bot.send_message(m.chat.id, "⏳ Запускаю выкидку со всех аккаунтов...")
+
+        cfg = configparser.ConfigParser()
+        cfg.read("configs/shared_secrets.cfg", encoding="utf-8")
+        sections = cfg.sections()
+
+        if not sections:
+            self.bot.send_message(m.chat.id, "❌ Нет аккаунтов в shared_secrets.cfg")
+            return
+
+        # Завершаем все активные сессии аренды
+        kicked_sessions = 0
+        try:
+            from rental_system import get_rental_manager
+            rm = get_rental_manager()
+            if rm:
+                active = [s for s in rm.sessions.values() if s.active]
+                for s in active:
+                    s.code_revoked = True
+                    rm.end_session(s.session_id)
+                    kicked_sessions += 1
+                if kicked_sessions:
+                    rm.save_sessions()
+        except Exception as ex:
+            logger.error(f"kickall: ошибка завершения сессий: {ex}")
+
+        # Кикаем каждый аккаунт
+        results = []
+        for sec in sections:
+            username = cfg[sec].get("username", sec)
+            shared_secret = cfg[sec].get("shared_secret", "")
+            password = cfg[sec].get("password", "")
+            steamid = cfg[sec].get("steam_id", "")
+
+            if not shared_secret or not password:
+                results.append(f"⚠️ {username} — нет пароля или shared_secret, пропущен")
+                continue
+
+            try:
+                result = kick_live(
+                    steam_login=username,
+                    password=password,
+                    shared_secret=shared_secret,
+                    method="revoke_sessions",
+                    steamid=steamid or None,
+                )
+                if result.get("ok"):
+                    results.append(f"✅ {username} — выкинут успешно")
+                else:
+                    err = result.get("error", result.get("reason", "неизвестная ошибка"))
+                    results.append(f"❌ {username} — ошибка: {err}")
+            except Exception as ex:
+                results.append(f"❌ {username} — исключение: {ex}")
+                logger.error(f"kickall: {username}: {ex}")
+
+        report = (
+            f"🔫 <b>Результат /kickall</b>\n\n"
+            + "\n".join(results)
+            + f"\n\n📋 Завершено сессий аренды: {kicked_sessions}"
+        )
+        self.bot.send_message(m.chat.id, report)
+        logger.info(f"kickall: выполнен владельцем {m.from_user.id}: {results}")
 
     def tg_refund(self, m: Message):
         """
@@ -1638,7 +1748,8 @@ class TGBot:
         self.msg_handler(self.restart_cardinal, commands=["restart"])
         self.msg_handler(self.ask_power_off, commands=["power_off"])
         self.msg_handler(self.send_announcements_kb, commands=["announcements"])
-        self.msg_handler(self.tg_guard_code, commands=["code"])
+        self.msg_handler(self.tg_guard_code, commands=["code", "guard", "login"])
+        self.msg_handler(self.tg_kickall, commands=["kickall"])
         self.msg_handler(self.add_game_to_list, commands=["add_game"])
         self.msg_handler(self.tg_refund, commands=["refund"])
         self.cbq_handler(self.send_review_reply_text, lambda c: c.data.startswith(f"{CBT.SEND_REVIEW_REPLY_TEXT}:"))

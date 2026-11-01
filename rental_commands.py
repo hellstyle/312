@@ -268,6 +268,157 @@ def handle_rental_extend(c: "Cardinal", e):
           chat_name)
 
 
+# ──────────────────────────── !Nч / !Nчасов ─────────────────────────────────
+
+def handle_rental_set_hours(c: "Cardinal", e):
+    """
+    Команда !Nч или !Nчасов / !Nчасов — задаёт длительность текущей сессии.
+    Примеры: !12ч, !12часов, !24ч, !6часов
+    Только владелец (сообщение себе) или от имени бота в чате покупателя.
+    """
+    r = _extract(c, e)
+    if not r:
+        return
+    chat_id, chat_name, username, mtext = r
+
+    import re
+    m = re.match(r'^!(\d+)\s*(?:ч|час|часов|hours?)\s*$', mtext.strip().lower())
+    if not m:
+        return
+
+    hours = int(m.group(1))
+    if hours < 1 or hours > 720:
+        _send(c, chat_id, "❌ Допустимо от 1 до 720 часов.", chat_name)
+        return
+
+    session = _active_session(chat_id)
+    if not session:
+        _send(c, chat_id, "❌ Нет активной сессии.", chat_name)
+        return
+    if session.is_offline:
+        _send(c, chat_id, "ℹ️ Оффлайн активация — длительность задаётся при покупке.", chat_name)
+        return
+
+    import time as _time
+    rm = get_rental_manager()
+    with rm.lock:
+        session.duration_hours = hours
+        session.end_time = session.start_time + hours * 3600
+    rm.save_sessions()
+
+    remaining = _fmt_time(session.get_remaining_time())
+    _send(c, chat_id,
+          f"⏱ Время аренды установлено: <b>{hours} ч</b>\n"
+          f"🎮 {session.game_name} — осталось: <b>{remaining}</b>\n\n"
+          f"⚠️ Продления не предусмотрено. По истечении нужно оформить новую покупку.",
+          chat_name)
+    logger.info(f"Сессия {session.session_id}: длительность установлена {hours} ч")
+
+
+# ──────────────────────────── !sessions ─────────────────────────────────────
+
+def handle_sessions_list(c: "Cardinal", e):
+    """
+    Команда !sessions — показывает все активные сессии (для владельца бота).
+    Может быть вызвана только если сообщение пришло от самого аккаунта FunPay
+    (т.е. отправлено через тест-чат или Telegram → FunPay ответ).
+    Для покупателей — !rental_status.
+    """
+    r = _extract(c, e)
+    if not r:
+        return
+    chat_id, chat_name, username, mtext = r
+
+    if mtext.strip().lower() != "!sessions":
+        return
+
+    # Только для владельца (сам аккаунт FunPay)
+    if not c.old_mode_enabled and username != c.account.username:
+        return
+
+    rm = get_rental_manager()
+    if not rm:
+        _send(c, chat_id, "❌ Система сессий не настроена.", chat_name)
+        return
+
+    active = [s for s in rm.sessions.values() if s.active]
+    if not active:
+        _send(c, chat_id, "📊 Активных сессий нет.", chat_name)
+        return
+
+    import time as _time
+    lines = [f"📊 <b>Активные сессии ({len(active)}):</b>\n"]
+    for s in active:
+        rem = _fmt_time(s.get_remaining_time())
+        lines.append(
+            f"🆔 <code>{s.session_id[:8]}</code> — {s.game_name}\n"
+            f"   👤 User: {s.user_id} | ⏳ {rem} | 🎮 {s.steam_login or '—'}"
+        )
+    _send(c, chat_id, "\n".join(lines), chat_name)
+
+
+# ──────────────────────────── !kick ─────────────────────────────────────────
+
+def handle_kick_user(c: "Cardinal", e):
+    """
+    Команда !kick <session_id_prefix> — принудительно завершает сессию и кикает.
+    Только для владельца (сам аккаунт FunPay).
+    Пример: !kick a3f2c1d4
+    """
+    r = _extract(c, e)
+    if not r:
+        return
+    chat_id, chat_name, username, mtext = r
+
+    import re
+    m = re.match(r'^!kick\s+(\S+)\s*$', mtext.strip().lower())
+    if not m:
+        return
+
+    # Только для владельца
+    if not c.old_mode_enabled and username != c.account.username:
+        return
+
+    prefix = m.group(1)
+    rm = get_rental_manager()
+    if not rm:
+        return
+
+    # Найдём сессию по префиксу session_id
+    matches = [s for s in rm.sessions.values() if s.session_id.startswith(prefix) and s.active]
+    if not matches:
+        _send(c, chat_id, f"❌ Сессия с префиксом <code>{prefix}</code> не найдена.", chat_name)
+        return
+    if len(matches) > 1:
+        ids = ", ".join(s.session_id[:8] for s in matches)
+        _send(c, chat_id, f"❌ Неоднозначно — совпало несколько: {ids}. Уточните префикс.", chat_name)
+        return
+
+    session = matches[0]
+    import configparser as _cp
+    cfg = _cp.ConfigParser()
+    cfg.read("configs/shared_secrets.cfg", encoding="utf-8")
+    shared = cfg[session.steam_login].get("shared_secret", "") if session.steam_login in cfg.sections() else ""
+    password = cfg[session.steam_login].get("password", "") if session.steam_login in cfg.sections() else ""
+    cred = rm.get_credential(session.session_id)
+    if cred:
+        password = cred
+
+    from steam_kick import kick_account
+    result = kick_account(c, session.steam_login or "", password, shared,
+                          session.session_id, method="revoke_sessions", reason="manual_kick",
+                          steamid=getattr(session, "steamid", None))
+    session.revoke_code()
+    rm.end_session(session.session_id)
+    rm.save_sessions()
+
+    ok = "✅" if result.get("ok") else "⚠️"
+    _send(c, chat_id,
+          f"{ok} Сессия <code>{session.session_id[:8]}</code> завершена.\n"
+          f"👤 Аккаунт: {session.steam_login} | Результат кика: {result.get('action', '?')}",
+          chat_name)
+
+
 # ─────────────────────────────── bindings ───────────────────────────────────
 
 BIND_TO_NEW_MESSAGE = [
@@ -276,6 +427,9 @@ BIND_TO_NEW_MESSAGE = [
     handle_offline_done,
     handle_rental_status,
     handle_rental_extend,
+    handle_rental_set_hours,
+    handle_sessions_list,
+    handle_kick_user,
 ]
 BIND_TO_LAST_CHAT_MESSAGE_CHANGED = [
     handle_rental_select_game,
@@ -283,4 +437,7 @@ BIND_TO_LAST_CHAT_MESSAGE_CHANGED = [
     handle_offline_done,
     handle_rental_status,
     handle_rental_extend,
+    handle_rental_set_hours,
+    handle_sessions_list,
+    handle_kick_user,
 ]
