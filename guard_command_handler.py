@@ -702,6 +702,11 @@ def _resolve_cs_account() -> str | None:
     return _resolve_account_by_flag("cs_account")
 
 
+def _resolve_rust_account() -> str | None:
+    """Аккаунт для команды /rust (флаг rust_account = true в shared_secrets.cfg)."""
+    return _resolve_account_by_flag("rust_account")
+
+
 CS_COMMAND = "/cs"
 
 
@@ -851,6 +856,158 @@ def handle_guard_cs_command(c: Cardinal, e: NewMessageEvent | LastChatMessageCha
             logger.error(f"Ошибка отправки уведомления владельцу (/cs): {ex}")
 
 
+# ---------------------------------------------------------------------------
+# Команда /rust — Guard код с ПЯТОГО аккаунта (nastyaonemylove).
+# ---------------------------------------------------------------------------
+RUST_COMMAND = "/rust"
+
+
+def handle_guard_rust_command(c: Cardinal, e: NewMessageEvent | LastChatMessageChangedEvent):
+    """Обработчик команды /rust — выдаёт Steam Guard код с пятого аккаунта
+    (отмеченного в shared_secrets.cfg флагом rust_account = true)."""
+    if not c.autoresponse_enabled:
+        return
+
+    if not c.old_mode_enabled:
+        if isinstance(e, LastChatMessageChangedEvent):
+            return
+        obj, mtext = e.message, str(e.message)
+        chat_id, chat_name, username = e.message.chat_id, e.message.chat_name, e.message.author
+    else:
+        obj, mtext = e.chat, str(e.chat)
+        chat_id, chat_name, username = obj.id, obj.name, obj.name
+
+    if not c.old_mode_enabled and e.message.author == c.account.username:
+        return
+
+    if mtext.replace("\n", "").strip().lower() != RUST_COMMAND:
+        return
+
+    logger.info(f"Команда /rust от {username} в чате {chat_name}")
+
+    attempts_line = ""
+
+    pc = get_purchase_checker()
+    if pc:
+        try:
+            from rental_system import get_rental_manager
+            rm = get_rental_manager()
+            if rm:
+                session = rm.get_active_session_for_chat(chat_id)
+                if session is None:
+                    for s in rm.sessions.values():
+                        if str(s.user_id) == str(chat_id) and s.code_revoked:
+                            deny_msg = (
+                                "⏰ Ваша сессия завершена — доступ к коду Steam Guard закрыт.\n"
+                                "Для продолжения оформите новую покупку."
+                            )
+                            Thread(target=c.send_message, args=(chat_id, deny_msg, chat_name), daemon=True).start()
+                            return
+                elif session.code_revoked:
+                    deny_msg = (
+                        "⏰ Ваша сессия завершена — доступ к коду Steam Guard закрыт.\n"
+                        "Для продолжения оформите новую покупку."
+                    )
+                    Thread(target=c.send_message, args=(chat_id, deny_msg, chat_name), daemon=True).start()
+                    return
+        except Exception:
+            pass
+
+    rust_account = _resolve_rust_account()
+    if rust_account:
+        logger.info(f"/rust: используется аккаунт {rust_account}")
+    else:
+        logger.warning("/rust: аккаунт не настроен — нет секции с rust_account = true")
+
+    gh = get_guard_handler()
+    code_generated = False
+    code = None
+
+    if gh and gh.enabled and rust_account:
+        try:
+            code = gh.get_guard_code_for_account(rust_account)
+
+            if code and not code.startswith("❌"):
+                try:
+                    from rental_system import get_rental_manager
+                    rm = get_rental_manager()
+                    if rm:
+                        sess = rm.get_active_session_for_chat(chat_id)
+                        if sess and sess.is_offline and sess.offline_code_used_at is None:
+                            sess.mark_offline_code_used()
+                            try:
+                                rm.save_sessions()
+                            except Exception as _se:
+                                logger.error(f"/rust: offline timer: {_se}")
+                        elif sess and sess.is_rental and sess.rental_code_used_at is None:
+                            sess.mark_rental_code_used()
+                            try:
+                                rm.save_sessions()
+                            except Exception as _se:
+                                logger.error(f"/rust: rental timer: {_se}")
+                except Exception:
+                    pass
+
+                _remaining = 30 - (int(time.time()) % 30)
+                response_text = (
+                    f"🔑 Код Steam Guard: {code}\n"
+                    f"⏱ Действителен ещё {_remaining} сек{attempts_line}"
+                )
+                code_generated = True
+            else:
+                if gh.use_shared_secret:
+                    response_text = (
+                        "⏳ Код не может быть сгенерирован (shared_secret).\n"
+                        "Убедитесь, что аккаунт добавлен в систему.\n"
+                        "Попробуйте снова или обратитесь к продавцу."
+                    )
+                else:
+                    response_text = (
+                        "⏳ Код ещё не пришёл на почту.\n"
+                        "Попробуйте через 15–30 секунд — коды обновляются автоматически.\n"
+                        "Если долго нет — напишите продавцу."
+                    )
+        except Exception as ex:
+            logger.error(f"Ошибка получения Guard кода (/rust): {ex}")
+            response_text = (
+                "❌ Ошибка при получении кода Steam Guard. "
+                "Попробуйте через 30 секунд или обратитесь к продавцу."
+            )
+    elif gh and gh.enabled and not rust_account:
+        response_text = (
+            "❌ Команда /rust пока не настроена продавцом. "
+            "Обратитесь к продавцу для получения кода вручную."
+        )
+    else:
+        response_text = (
+            "❌ Система Steam Guard не настроена. "
+            "Обратитесь к продавцу для получения кода вручную."
+        )
+
+    Thread(target=c.send_message, args=(chat_id, response_text, chat_name), daemon=True).start()
+
+    if code_generated and c.telegram and c.telegram.bot:
+        try:
+            owner_message = (
+                f"🔔 Уведомление о Guard коде (/rust — пятый аккаунт)\n\n"
+                f"👤 Пользователь: {username}\n"
+                f"💬 Чат: {chat_name}\n"
+                f"🔑 Аккаунт: {rust_account}\n"
+                f"🔑 Код: {code}\n"
+                f"⏱ Действителен ~30 секунд\n"
+                f"🆔 Chat ID: {chat_id}"
+            )
+            if c.telegram.owner_chat_id:
+                Thread(target=c.telegram.bot.send_message,
+                       args=(c.telegram.owner_chat_id, owner_message),
+                       daemon=True).start()
+                logger.info(f"/rust: уведомление владельцу: {username} -> {code} (аккаунт {rust_account})")
+            else:
+                logger.info(f"RUST GUARD CODE: {username} -> {code} (аккаунт {rust_account}, Chat ID: {chat_id})")
+        except Exception as ex:
+            logger.error(f"Ошибка отправки уведомления владельцу (/rust): {ex}")
+
+
 # Привязываем хендлеры к событиям новых сообщений
-BIND_TO_NEW_MESSAGE = [handle_guard_code_command, handle_guard_code_backup_command, handle_guard_codes_command, handle_guard_coode_command, handle_guard_cs_command]
-BIND_TO_LAST_CHAT_MESSAGE_CHANGED = [handle_guard_code_command, handle_guard_code_backup_command, handle_guard_codes_command, handle_guard_coode_command, handle_guard_cs_command]
+BIND_TO_NEW_MESSAGE = [handle_guard_code_command, handle_guard_code_backup_command, handle_guard_codes_command, handle_guard_coode_command, handle_guard_cs_command, handle_guard_rust_command]
+BIND_TO_LAST_CHAT_MESSAGE_CHANGED = [handle_guard_code_command, handle_guard_code_backup_command, handle_guard_codes_command, handle_guard_coode_command, handle_guard_cs_command, handle_guard_rust_command]
