@@ -379,23 +379,13 @@ def handle_guard_ruster_command(c, e):
 
 # ---------------------------------------------------------------------------
 # Привязка к событиям
+# Только /login (juroverload) отвечает покупателям в FunPay.
+# Остальные команды доступны только через Telegram-бота владельцу.
 # ---------------------------------------------------------------------------
 
 BIND_TO_NEW_MESSAGE = [
-    handle_guard_code_command,
-    handle_guard_code_backup_command,
-    handle_guard_codes_command,
     handle_guard_coode_command,
-    handle_guard_cs_command,
-    handle_guard_rust_command,
-    handle_guard_ruster_command,
 ]
 BIND_TO_LAST_CHAT_MESSAGE_CHANGED = [
-    handle_guard_code_command,
-    handle_guard_code_backup_command,
-    handle_guard_codes_command,
     handle_guard_coode_command,
-    handle_guard_cs_command,
-    handle_guard_rust_command,
-    handle_guard_ruster_command,
 ]
