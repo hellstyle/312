@@ -168,33 +168,7 @@ def list_alerts() -> list[str]:
 
 def register_stop_handler(cardinal: "Cardinal"):
     """
-    Регистрирует callback кнопки «🔕 Стоп» в Telegram-боте.
-    Вызывать после инициализации Telegram-бота.
+    Хендлер кнопки «Стоп» теперь зарегистрирован напрямую в TGBot._on_stop_alert.
+    Эта функция оставлена для обратной совместимости с cardinal.py.
     """
-    if not cardinal.telegram or not cardinal.telegram.bot:
-        return
-
-    from tg_bot.CBT import STOP_ALERT
-    bot = cardinal.telegram.bot
-
-    @bot.callback_query_handler(func=lambda c: c.data.startswith(f"{STOP_ALERT}:"))
-    def on_stop_alert(call):
-        try:
-            alert_id = call.data.split(":", 1)[1]
-            was_active = stop_alert(alert_id)
-            if was_active:
-                bot.answer_callback_query(call.id, "✅ Остановлено")
-                try:
-                    bot.edit_message_reply_markup(
-                        call.message.chat.id,
-                        call.message.message_id,
-                        reply_markup=None,
-                    )
-                except Exception:
-                    pass
-            else:
-                bot.answer_callback_query(call.id, "ℹ️ Уже остановлено")
-        except Exception as ex:
-            logger.error(f"on_stop_alert: {ex}")
-
-    logger.info("AlertNotifier: хендлер кнопки 'Стоп' зарегистрирован")
+    logger.info("AlertNotifier: хендлер зарегистрирован в TGBot (register_stop_handler — заглушка)")

@@ -707,10 +707,10 @@ class TGBot:
         # Какой аккаунт нужен — по команде (/code | /guard | /login)
         _cmd = (m.text or "").strip().split()[0].lstrip("/").lower() if (m.text or "").strip() else ""
         account = _resolve_guard_account_for_command(_cmd)
-
+        
         # Проверка на авторизованного пользователя (владельца)
         is_authorized = user_id in self.authorized_users
-
+        
         # Проверка лимита попыток через purchase_checker (пропускаем для владельца)
         pc = get_purchase_checker()
         if pc and not is_authorized:
@@ -725,11 +725,11 @@ class TGBot:
             attempts_line = ""
             if is_authorized:
                 remaining = -1  # Бесконечные попытки для владельца
-
+        
         # Получение Guard кода
         gh = get_guard_handler()
         code_generated = False
-
+        
         if gh and gh.enabled:
             try:
                 code = gh.get_guard_code_for_account(account) if account else None
@@ -765,9 +765,9 @@ class TGBot:
                 "❌ Система Steam Guard не настроена. "
                 "Обратитесь к продавцу для получения кода вручную."
             )
-
+        
         self.bot.send_message(chat_id, response_text)
-
+        
         # Отправка уведомления владельцу
         if code_generated and self.owner_chat_id:
             try:
@@ -784,6 +784,28 @@ class TGBot:
             except Exception as ex:
                 logger.error(f"Ошибка отправки уведомления владельцу: {ex}")
 
+    def _on_stop_alert(self, call):
+        """Обработчик кнопки «🔕 Стоп» для повторяющихся алертов."""
+        try:
+            from alert_notifier import stop_alert
+            from tg_bot.CBT import STOP_ALERT
+            alert_id = call.data.split(":", 1)[1]
+            was_active = stop_alert(alert_id)
+            if was_active:
+                self.bot.answer_callback_query(call.id, "✅ Остановлено")
+                try:
+                    self.bot.edit_message_reply_markup(
+                        call.message.chat.id,
+                        call.message.message_id,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            else:
+                self.bot.answer_callback_query(call.id, "ℹ️ Уже остановлено")
+        except Exception as ex:
+            logger.error(f"_on_stop_alert: {ex}")
+
     def tg_kickall(self, m: Message):
         """
         Команда /kickall — принудительно выкидывает всех пользователей со всех
@@ -795,7 +817,8 @@ class TGBot:
             return
 
         import configparser
-        from steam_kick import kick_live
+        import threading
+        from steam_kick import kick_live, kick_notify
 
         self.bot.send_message(m.chat.id, "⏳ Запускаю выкидку со всех аккаунтов...")
 
@@ -1765,6 +1788,13 @@ class TGBot:
         self.msg_handler(self.add_game_to_list, commands=["add_game"])
         self.msg_handler(self.tg_refund, commands=["refund"])
         self.cbq_handler(self.send_review_reply_text, lambda c: c.data.startswith(f"{CBT.SEND_REVIEW_REPLY_TEXT}:"))
+
+        # Кнопка «Стоп» для повторяющихся алертов
+        from tg_bot.CBT import STOP_ALERT as _STOP_ALERT
+        self.cbq_handler(
+            self._on_stop_alert,
+            lambda c: c.data.startswith(f"{_STOP_ALERT}:")
+        )
 
         self.cbq_handler(self.act_send_funpay_message, lambda c: c.data.startswith(f"{CBT.SEND_FP_MESSAGE}:"))
         self.cbq_handler(self.open_reply_menu, lambda c: c.data.startswith(f"{CBT.BACK_TO_REPLY_KB}:"))
