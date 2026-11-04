@@ -301,13 +301,18 @@ def send_new_msg_notification_handler(c: Cardinal, e: NewMessageEvent) -> None:
     Thread(target=c.telegram.send_notification, args=(text, kb, utils.NotificationTypes.new_message),
            daemon=True).start()
 
-    # --- Алерт: если нет ответа 3 мин — спам каждые 2 мин до нажатия «Стоп» ---
-    # Запускаем на любое сообщение от покупателя (не от бота и не системное)
-    if nm:
+    # --- Алерт только на сообщения от покупателя (не от тебя и не от бота) ---
+    # nm=True означает что в стеке есть сообщения от покупателя,
+    # но дополнительно проверяем что последнее сообщение именно от покупателя
+    _last_author_is_buyer = (
+        nm and
+        not e.message.by_bot and
+        e.message.author != c.account.username and
+        e.message.author_id != 0  # не системное
+    )
+    if _last_author_is_buyer:
         try:
             from alert_notifier import start_alert
-            # alert_id по chat_id — перезапускается при каждом новом сообщении,
-            # сбрасывая 3-минутный таймер заново
             msg_preview = str(e.message)[:80].replace("\n", " ")
             start_alert(
                 cardinal=c,
