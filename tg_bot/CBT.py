@@ -708,3 +708,32 @@ Callback для закрепления плагина в списке плаги
 UUID: str - UUID плагина.
 offset: int - смещение списка плагинов.
 """
+
+
+# Аренда — установка длительности сессии через Telegram
+RENTAL_SET_HOURS = "rental_set_hours"
+"""
+Callback для установки длительности аренды.
+Использование: CBT.RENTAL_SET_HOURS:session_id:hours
+
+session_id: str - ID сессии аренды.
+hours: int - количество часов аренды.
+"""
+
+RENTAL_EXPIRE_EXTEND = "rental_expire_extend"
+"""
+Callback для ответа на уведомление об истечении аренды.
+Использование: CBT.RENTAL_EXPIRE_EXTEND:chat_id:hours
+
+chat_id: int - ID чата покупателя.
+hours: int - часов продления.
+"""
+
+
+STOP_ALERT = "stop_alert"
+"""
+Callback для остановки повторяющихся уведомлений-напоминаний.
+Использование: CBT.STOP_ALERT:alert_id
+
+alert_id: str - уникальный ID цикла уведомлений.
+"""

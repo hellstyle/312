@@ -292,6 +292,13 @@ class Cardinal(object):
         self.telegram = tg_bot.bot.TGBot(self)
         self.telegram.init()
 
+        # Регистрируем хендлер кнопки "Отключить" для повторяющихся уведомлений
+        try:
+            from alert_notifier import register_stop_handler
+            register_stop_handler(self)
+        except Exception as _ath_ex:
+            logger.warning(f"alert_notifier: не удалось зарегистрировать: {_ath_ex}")
+
     def get_balance(self, attempts: int = 3) -> FunPayAPI.types.Balance:
         subcategories = self.account.get_sorted_subcategories()[FunPayAPI.enums.SubCategoryTypes.COMMON]
         lots = []

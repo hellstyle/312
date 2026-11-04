@@ -220,6 +220,19 @@ def send_response_handler(c: Cardinal, e: NewMessageEvent | LastChatMessageChang
     response_text = cardinal_tools.format_msg_text(c.AR_CFG[command]["response"], obj)
     Thread(target=c.send_message, args=(chat_id, response_text, chat_name), daemon=True).start()
 
+    # --- Если покупатель написал !помощь — немедленно запускаем алерт ---
+    if command in ("!помощь", "помощь", "!help"):
+        try:
+            from alert_notifier import start_alert
+            start_alert(
+                cardinal=c,
+                alert_id=f"help_{chat_id}",
+                title="🆘 Покупатель зовёт продавца!",
+                body=f"👤 {chat_name}\n💬 написал: {command}",
+            )
+        except Exception as _ae:
+            logger.error(f"send_response_handler: alert !помощь: {_ae}")
+
 
 def old_send_new_msg_notification_handler(c: Cardinal, e: LastChatMessageChangedEvent):
     if any([not c.old_mode_enabled, not c.telegram, not e.chat.unread,
@@ -287,6 +300,23 @@ def send_new_msg_notification_handler(c: Cardinal, e: NewMessageEvent) -> None:
     kb = keyboards.reply(chat_id, chat_name, extend=True)
     Thread(target=c.telegram.send_notification, args=(text, kb, utils.NotificationTypes.new_message),
            daemon=True).start()
+
+    # --- Алерт: если нет ответа 3 мин — спам каждые 2 мин до нажатия «Стоп» ---
+    # Запускаем на любое сообщение от покупателя (не от бота и не системное)
+    if nm:
+        try:
+            from alert_notifier import start_alert
+            # alert_id по chat_id — перезапускается при каждом новом сообщении,
+            # сбрасывая 3-минутный таймер заново
+            msg_preview = str(e.message)[:80].replace("\n", " ")
+            start_alert(
+                cardinal=c,
+                alert_id=f"msg_{chat_id}",
+                title="💬 Нет ответа покупателю!",
+                body=f"👤 {chat_name}\n💬 {msg_preview}",
+            )
+        except Exception as _ae:
+            logger.error(f"send_new_msg_notification_handler: alert: {_ae}")
 
 
 def send_review_notification(c: Cardinal, order: Order, chat_id: int, reply_text: str | None):
@@ -608,6 +638,23 @@ def send_new_order_notification_handler(c: Cardinal, e: NewOrderEvent, *args):
     Thread(target=c.telegram.send_notification, args=(text, keyboard, utils.NotificationTypes.new_order),
            daemon=True).start()
 
+    # --- Алерт: если нет ответа 3 мин — спам каждые 2 мин до нажатия «Стоп» ---
+    try:
+        from alert_notifier import start_alert
+        start_alert(
+            cardinal=c,
+            alert_id=f"order_{e.order.id}",
+            title="🔔 Новый заказ без ответа!",
+            body=(
+                f"👤 {e.order.buyer_username}\n"
+                f"🛒 {e.order.description}\n"
+                f"💰 {e.order.price} {e.order.currency}\n"
+                f"🆔 #{e.order.id}"
+            ),
+        )
+    except Exception as _ae:
+        logger.error(f"send_new_order_notification_handler: alert: {_ae}")
+
 
 def deliver_goods(c: Cardinal, e: NewOrderEvent, *args):
     chat = c.account.get_chat_by_name(e.order.buyer_username)
@@ -845,21 +892,30 @@ def deliver_product_handler(c: Cardinal, e: NewOrderEvent, *args) -> None:
 
                 # ── Уведомление владельца в Telegram ──────────────────────
                 if c.telegram and c.telegram.bot:
-                    tg_note = (
-                        f"🆕 Новая сессия [{session_type.upper()}]\n\n"
-                        f"👤 {e.order.buyer_username} (заказ #{e.order.id})\n"
-                        f"🎮 {game_name} | ⏱ {default_hours} ч\n"
-                        f"🔑 Steam: {steam_login or '—'}\n"
-                        f"🆔 Сессия: <code>{session.session_id}</code>"
-                    )
+                    # Спрашиваем у владельца сколько часов аренда (с кнопками)
                     try:
-                        owner_id = getattr(c.telegram, "owner_chat_id", None)
-                        if owner_id:
-                            Thread(target=c.telegram.bot.send_message,
-                                   args=(owner_id, tg_note),
-                                   daemon=True).start()
+                        from rental_tg_handler import send_rental_hours_question
+                        send_rental_hours_question(
+                            c, session.session_id, e.order.buyer_username,
+                            game_name, e.order.chat_id
+                        )
                     except Exception:
-                        pass
+                        # Фоллбэк: просто информационное уведомление
+                        tg_note = (
+                            f"🆕 Новая сессия [{session_type.upper()}]\n\n"
+                            f"👤 {e.order.buyer_username} (заказ #{e.order.id})\n"
+                            f"🎮 {game_name} | ⏱ {default_hours} ч\n"
+                            f"🔑 Steam: {steam_login or '—'}\n"
+                            f"🆔 Сессия: <code>{session.session_id}</code>"
+                        )
+                        try:
+                            owner_id = getattr(c.telegram, "owner_chat_id", None)
+                            if owner_id:
+                                Thread(target=c.telegram.bot.send_message,
+                                       args=(owner_id, tg_note),
+                                       daemon=True).start()
+                        except Exception:
+                            pass
 
             except Exception as ex:
                 logger.error(f"Ошибка создания сессии: {ex}", exc_info=True)
@@ -1102,6 +1158,80 @@ def send_bot_started_notification_handler(c: Cardinal, *args):
             continue
 
 
+# ---------------------------------------------------------------------------
+# Авто-ответ на любое сообщение от покупателя
+# ---------------------------------------------------------------------------
+# Кулдаун в секундах — бот не будет отвечать одному покупателю чаще,
+# чем раз в AUTO_MESSAGE_COOLDOWN секунд.
+AUTO_MESSAGE_COOLDOWN = 3600  # 1 час
+
+# Хранилище: chat_id -> timestamp последнего авто-ответа
+_auto_msg_last_sent: dict[int, float] = {}
+
+
+def auto_message_handler(c: Cardinal, e: NewMessageEvent):
+    """
+    Отправляет авто-ответ на любое сообщение от покупателя.
+    Срабатывает один раз в AUTO_MESSAGE_COOLDOWN секунд на чат.
+    Текст задаётся в [AutoMessage] autoMessageText в configs/_main.cfg.
+    Включается через [AutoMessage] enabled = 1.
+    """
+    # Работаем только в новом режиме
+    if c.old_mode_enabled:
+        return
+    if isinstance(e, LastChatMessageChangedEvent):
+        return
+
+    msg = e.message
+    # Пропускаем системные сообщения и собственные
+    if msg.author_id == c.account.id:
+        return
+    if msg.author_id == 0:
+        return  # системное сообщение FunPay
+    if msg.type not in (MessageTypes.NON_SYSTEM,):
+        return
+
+    chat_id = msg.chat_id
+    chat_name = msg.chat_name
+    username = msg.author
+    mtext = str(msg).strip()
+
+    # Пропускаем если это команда (начинается с !)
+    if mtext.startswith("!"):
+        return
+
+    # Пропускаем если сообщение является командой из auto_response
+    if mtext.lower() in c.AR_CFG.sections():
+        return
+
+    # Проверяем настройки
+    if not c.MAIN_CFG.has_section("AutoMessage"):
+        return
+    if not c.MAIN_CFG["AutoMessage"].getboolean("enabled", fallback=False):
+        return
+    text = c.MAIN_CFG["AutoMessage"].get("autoMessageText", "").strip()
+    if not text:
+        return
+
+    # Черный список
+    if c.bl_response_enabled and username in c.blacklist:
+        return
+
+    # Кулдаун
+    now = time.time()
+    cooldown = c.MAIN_CFG["AutoMessage"].getint("cooldown", fallback=AUTO_MESSAGE_COOLDOWN)
+    last = _auto_msg_last_sent.get(chat_id, 0)
+    if now - last < cooldown:
+        return
+
+    _auto_msg_last_sent[chat_id] = now
+
+    # Форматируем текст (поддерживает $username, $chat_name)
+    formatted = cardinal_tools.format_msg_text(text, msg)
+    Thread(target=c.send_message, args=(chat_id, formatted, chat_name), daemon=True).start()
+    logger.info(f"Авто-ответ отправлен пользователю {username} (chat {chat_id})")
+
+
 BIND_TO_INIT_MESSAGE = [save_init_chats_handler, update_threshold_on_initial_chat]
 
 BIND_TO_LAST_CHAT_MESSAGE_CHANGED = [old_log_msg_handler,
@@ -1119,6 +1249,7 @@ BIND_TO_NEW_MESSAGE = [log_msg_handler,
                        update_threshold_on_last_message_change,
                        add_old_user_handler,
                        send_response_handler,
+                       auto_message_handler,
                        process_review_handler,
                        send_new_msg_notification_handler,
                        send_command_notification_handler,
@@ -1195,6 +1326,22 @@ def register_purchase_on_order_handler(c: Cardinal, e: NewOrderEvent, *args):
                     if uname in lot_lower:
                         bound = sec
                         break
+                # Если не нашли по username — ищем по ключевым словам из description лота
+                # (например, лот "CS аккаунт" → cs_account, "guard" → codes_account и т.д.)
+                if not bound:
+                    flag_keywords = {
+                        "codes_account": ["guard", "meloed"],
+                        "coode_account": ["login", "juroverload"],
+                        "cs_account":    ["cs", "csglobal", "cs_global"],
+                    }
+                    for flag, keywords in flag_keywords.items():
+                        if any(kw in lot_lower for kw in keywords):
+                            for sec in sections:
+                                if _ss[sec].get(flag, "").strip().lower() in ("1", "true", "yes", "on"):
+                                    bound = sec
+                                    break
+                        if bound:
+                            break
                 # Если имя не найдено в лоте — привязываем к основному Guard-аккаунту
                 # (primary=true или совпадающий по steam_id из _main.cfg), чтобы !code
                 # не выдал код от первого попавшегося аккаунта.
