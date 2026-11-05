@@ -26,11 +26,36 @@ logger = logging.getLogger("AlertNotifier")
 _active_alerts: dict[str, threading.Event] = {}
 _lock = threading.Lock()
 
+# Тихий период после нажатия Стоп: {chat_id_prefix: timestamp}
+# Пока время не истекло — новые алерты для этого чата не запускаются
+_silence_until: dict[str, float] = {}
+_silence_lock = threading.Lock()
+
+SILENCE_AFTER_STOP = 10 * 60  # 10 минут тишины после нажатия Стоп
+
 INITIAL_DELAY  = 2 * 60  # задержка перед первой волной
 REPEAT_INTERVAL = 2 * 60  # пауза между волнами
 BURST_TOTAL    = 10       # сообщений в волне
 BURST_SIZE     = 3        # сообщений за раз
 BURST_PAUSE    = 1        # сек между пачками
+
+
+def _is_silenced(alert_id: str) -> bool:
+    """Возвращает True если для этого alert_id ещё действует тихий период."""
+    with _silence_lock:
+        until = _silence_until.get(alert_id)
+    if until and time.time() < until:
+        remaining = int(until - time.time())
+        logger.info(f"Alert [{alert_id}] в тихом периоде ещё {remaining}с — пропускаем")
+        return True
+    return False
+
+
+def _set_silence(alert_id: str):
+    """Устанавливает тихий период для alert_id на SILENCE_AFTER_STOP секунд."""
+    with _silence_lock:
+        _silence_until[alert_id] = time.time() + SILENCE_AFTER_STOP
+    logger.info(f"Alert [{alert_id}] тихий период {SILENCE_AFTER_STOP // 60} мин")
 
 
 def start_alert(
@@ -43,6 +68,10 @@ def start_alert(
         return ""
     owner_id = getattr(cardinal.telegram, "owner_chat_id", None)
     if not owner_id:
+        return ""
+
+    # Не запускаем если тихий период ещё действует
+    if _is_silenced(alert_id):
         return ""
 
     # Останавливаем предыдущий алерт с тем же ID и ждём чуть чтобы поток завершился
@@ -65,6 +94,7 @@ def start_alert(
     def _loop():
         # Ждём перед первой волной
         if stop_event.wait(timeout=INITIAL_DELAY):
+            _set_silence(alert_id)
             _cleanup(alert_id)
             logger.info(f"Alert [{alert_id}] остановлен до первой волны")
             return
@@ -78,9 +108,13 @@ def start_alert(
 
         # Подтверждение
         try:
-            cardinal.telegram.bot.send_message(owner_id, "✅ Уведомления остановлены")
+            cardinal.telegram.bot.send_message(
+                owner_id,
+                f"✅ Уведомления остановлены\n🔕 Тихий режим на {SILENCE_AFTER_STOP // 60} мин"
+            )
         except Exception:
             pass
+        _set_silence(alert_id)
         _cleanup(alert_id)
         logger.info(f"Alert [{alert_id}] завершён после {wave} волн")
 

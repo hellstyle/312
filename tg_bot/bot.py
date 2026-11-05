@@ -70,6 +70,14 @@ def _resolve_guard_account_for_command(command: str):
             for s in sections:
                 if cfg[s].get("ruster_account", "").strip().lower() in ("1", "true", "yes", "on"):
                     return cfg[s].get("username", s)
+        if command in ("og1", "/og1"):
+            for s in sections:
+                if cfg[s].get("og1_account", "").strip().lower() in ("1", "true", "yes", "on"):
+                    return cfg[s].get("username", s)
+        if command in ("og2", "/og2"):
+            for s in sections:
+                if cfg[s].get("og2_account", "").strip().lower() in ("1", "true", "yes", "on"):
+                    return cfg[s].get("username", s)
     except Exception:
         pass
     return None
@@ -1783,7 +1791,7 @@ class TGBot:
         self.msg_handler(self.restart_cardinal, commands=["restart"])
         self.msg_handler(self.ask_power_off, commands=["power_off"])
         self.msg_handler(self.send_announcements_kb, commands=["announcements"])
-        self.msg_handler(self.tg_guard_code, commands=["code", "guard", "login", "cs", "rust", "ruster"])
+        self.msg_handler(self.tg_guard_code, commands=["code", "guard", "login", "cs", "rust", "ruster", "og1", "og2"])
         self.msg_handler(self.tg_kickall, commands=["kickall"])
         self.msg_handler(self.add_game_to_list, commands=["add_game"])
         self.msg_handler(self.tg_refund, commands=["refund"])

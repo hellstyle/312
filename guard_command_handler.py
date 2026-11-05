@@ -88,6 +88,14 @@ def _resolve_ruster_account() -> str | None:
     return _resolve_account_by_flag("ruster_account")
 
 
+def _resolve_og1_account() -> str | None:
+    return _resolve_account_by_flag("og1_account")
+
+
+def _resolve_og2_account() -> str | None:
+    return _resolve_account_by_flag("og2_account")
+
+
 # ---------------------------------------------------------------------------
 # Общие вспомогательные функции
 # ---------------------------------------------------------------------------
@@ -355,6 +363,8 @@ LOGIN_COMMAND   = "/login"
 CS_COMMAND      = "/cs"
 RUST_COMMAND    = "/rust"
 RUSTER_COMMAND  = "/ruster"
+OG1_COMMAND     = "/og1"
+OG2_COMMAND     = "/og2"
 
 
 def handle_guard_codes_command(c, e):
@@ -375,6 +385,14 @@ def handle_guard_rust_command(c, e):
 
 def handle_guard_ruster_command(c, e):
     _handle_command(c, e, RUSTER_COMMAND, _resolve_ruster_account)
+
+
+def handle_guard_og1_command(c, e):
+    _handle_command(c, e, OG1_COMMAND, _resolve_og1_account)
+
+
+def handle_guard_og2_command(c, e):
+    _handle_command(c, e, OG2_COMMAND, _resolve_og2_account)
 
 
 # ---------------------------------------------------------------------------
