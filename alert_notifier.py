@@ -33,7 +33,7 @@ _silence_lock = threading.Lock()
 
 SILENCE_AFTER_STOP = 10 * 60  # 10 минут тишины после нажатия Стоп
 
-INITIAL_DELAY  = 2 * 60  # задержка перед первой волной
+INITIAL_DELAY  = 0            # без задержки — первая волна сразу
 REPEAT_INTERVAL = 2 * 60  # пауза между волнами
 BURST_TOTAL    = 10       # сообщений в волне
 BURST_SIZE     = 3        # сообщений за раз
