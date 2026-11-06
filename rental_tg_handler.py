@@ -77,7 +77,7 @@ def send_rental_hours_question(cardinal: "Cardinal", session_id: str, buyer: str
 
     def _send():
         try:
-            cardinal.telegram.bot.send_message(owner_id, text, reply_markup=kb)
+            cardinal.telegram.bot.send_message(owner_id, text, reply_markup=kb, disable_notification=True)
         except Exception as e:
             logger.error(f"send_rental_hours_question: {e}")
 
@@ -314,7 +314,7 @@ def patch_rental_checker_with_warning(cardinal: "Cardinal"):
                                             f"Продлить аренду?"
                                         )
                                         extend_kb = _extend_keyboard(int(session.user_id))
-                                        cardinal.telegram.bot.send_message(owner_id, text, reply_markup=extend_kb)
+                                        cardinal.telegram.bot.send_message(owner_id, text, reply_markup=extend_kb, disable_notification=True)
                                     except Exception as _te:
                                         logger.error(f"rental expiry TG notify: {_te}")
                             callback(session)

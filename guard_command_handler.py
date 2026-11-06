@@ -168,6 +168,7 @@ def _notify_owner(c, username, chat_name, chat_id, cmd, account, code):
         )
         Thread(target=c.telegram.bot.send_message,
                args=(c.telegram.owner_chat_id, msg),
+               kwargs={"disable_notification": True},
                daemon=True).start()
     except Exception as ex:
         logger.error(f"_notify_owner({cmd}): {ex}")

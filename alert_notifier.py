@@ -110,7 +110,8 @@ def start_alert(
         try:
             cardinal.telegram.bot.send_message(
                 owner_id,
-                f"✅ Уведомления остановлены\n🔕 Тихий режим на {SILENCE_AFTER_STOP // 60} мин"
+                f"✅ Уведомления остановлены\n🔕 Тихий режим на {SILENCE_AFTER_STOP // 60} мин",
+                disable_notification=True
             )
         except Exception:
             pass
@@ -150,6 +151,7 @@ def _run_wave(wave: int, stop_event: threading.Event, alert_id: str,
             try:
                 cardinal.telegram.bot.send_message(
                     owner_id, text,
+                    parse_mode="HTML",
                     reply_markup=kb if is_last else None
                 )
             except Exception as ex:

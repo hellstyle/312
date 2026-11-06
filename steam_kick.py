@@ -51,6 +51,7 @@ def kick_notify(cardinal: "Cardinal", steam_login: str, session_id: str,
                 threading.Thread(
                     target=cardinal.telegram.bot.send_message,
                     args=(owner_chat_id, msg),
+                    kwargs={"disable_notification": True},
                     daemon=True,
                 ).start()
     except Exception as e:

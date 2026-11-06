@@ -1837,7 +1837,7 @@ class TGBot:
         :param photo: фотография (если нужна).
         :param pin: закреплять ли сообщение.
         """
-        kwargs = {}
+        kwargs = {"disable_notification": True}
         if keyboard is not None:
             kwargs["reply_markup"] = keyboard
         to_delete = []

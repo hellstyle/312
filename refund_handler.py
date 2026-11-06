@@ -131,6 +131,7 @@ def _tg_notify(cardinal: "Cardinal", text: str):
         if owner_id and cardinal.telegram.bot:
             Thread(target=cardinal.telegram.bot.send_message,
                    args=(owner_id, text),
+                   kwargs={"disable_notification": True},
                    daemon=True).start()
     except Exception as e:
         logger.error(f"Ошибка отправки TG уведомления: {e}")
