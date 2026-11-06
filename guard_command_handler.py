@@ -175,9 +175,7 @@ def _notify_owner(c, username, chat_name, chat_id, cmd, account, code):
 
 def _handle_command(c, e, cmd: str, account_resolver):
     """
-    Универсальный обработчик Guard-команды.
-    cmd           — строка команды (например '/guard')
-    account_resolver — функция возвращающая username аккаунта
+    Универсальный обработчик Guard-команды. Без проверок покупки/сессии.
     """
     result = _extract_event(c, e)
     if result is None:
@@ -188,10 +186,6 @@ def _handle_command(c, e, cmd: str, account_resolver):
         return
 
     logger.info(f"Команда {cmd} от {username} в чате {chat_name}")
-
-    pc = get_purchase_checker()
-    if pc and _check_session_revoked(c, chat_id, chat_name):
-        return
 
     account = account_resolver()
     if account:
@@ -397,13 +391,17 @@ def handle_guard_og2_command(c, e):
 
 # ---------------------------------------------------------------------------
 # Привязка к событиям
-# Только /login (juroverload) отвечает покупателям в FunPay.
-# Остальные команды доступны только через Telegram-бота владельцу.
+# /login (juroverload), /og1 и /og2 отвечают покупателям в FunPay без проверок.
+# Остальные команды — только через Telegram владельцу.
 # ---------------------------------------------------------------------------
 
 BIND_TO_NEW_MESSAGE = [
     handle_guard_coode_command,
+    handle_guard_og1_command,
+    handle_guard_og2_command,
 ]
 BIND_TO_LAST_CHAT_MESSAGE_CHANGED = [
     handle_guard_coode_command,
+    handle_guard_og1_command,
+    handle_guard_og2_command,
 ]
