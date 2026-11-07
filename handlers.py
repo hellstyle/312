@@ -220,8 +220,8 @@ def send_response_handler(c: Cardinal, e: NewMessageEvent | LastChatMessageChang
     response_text = cardinal_tools.format_msg_text(c.AR_CFG[command]["response"], obj)
     Thread(target=c.send_message, args=(chat_id, response_text, chat_name), daemon=True).start()
 
-    # --- Если покупатель написал !фото — немедленно запускаем алерт ---
-    if command == "!фото":
+    # --- Если покупатель написал !фото / !photo — немедленно запускаем алерт ---
+    if command in ("!фото", "!photo"):
         try:
             from alert_notifier import start_alert
             owner_id = getattr(c.telegram, "owner_chat_id", None) if c.telegram else None
@@ -233,7 +233,7 @@ def send_response_handler(c: Cardinal, e: NewMessageEvent | LastChatMessageChang
                 body=f"👤 {chat_name}\n💬 написал: {command}",
             )
         except Exception as _ae:
-            logger.error(f"send_response_handler: alert !фото: {_ae}")
+            logger.error(f"send_response_handler: alert !фото/!photo: {_ae}")
 
 
 def old_send_new_msg_notification_handler(c: Cardinal, e: LastChatMessageChangedEvent):
