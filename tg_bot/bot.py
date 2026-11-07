@@ -814,6 +814,16 @@ class TGBot:
         except Exception as ex:
             logger.error(f"_on_stop_alert: {ex}")
 
+    def tg_rust_pool(self, m: Message):
+        """Команда /rust — список или данные Rust аккаунта из пула."""
+        from rust_pool_handler import handle_rust_pool_command
+        handle_rust_pool_command(m, self.bot, self.authorized_users)
+
+    def tg_cs_pool(self, m: Message):
+        """Команда /cs — список или данные CS аккаунта из пула."""
+        from cs_pool_handler import handle_cs_pool_command
+        handle_cs_pool_command(m, self.bot, self.authorized_users)
+
     def tg_kickall(self, m: Message):
         """
         Команда /kickall — принудительно выкидывает всех пользователей со всех
@@ -1791,7 +1801,9 @@ class TGBot:
         self.msg_handler(self.restart_cardinal, commands=["restart"])
         self.msg_handler(self.ask_power_off, commands=["power_off"])
         self.msg_handler(self.send_announcements_kb, commands=["announcements"])
-        self.msg_handler(self.tg_guard_code, commands=["code", "guard", "login", "cs", "rust", "ruster", "og1", "og2"])
+        self.msg_handler(self.tg_guard_code, commands=["code", "guard", "login", "ruster", "og1", "og2"])
+        self.msg_handler(self.tg_rust_pool, commands=["rust"])
+        self.msg_handler(self.tg_cs_pool, commands=["cs"])
         self.msg_handler(self.tg_kickall, commands=["kickall"])
         self.msg_handler(self.add_game_to_list, commands=["add_game"])
         self.msg_handler(self.tg_refund, commands=["refund"])
