@@ -233,21 +233,17 @@ def _handle_command(c, e, cmd: str, account_resolver):
 # ---------------------------------------------------------------------------
 
 def handle_guard_code_command(c, e):
-    """Команды /code и !code → основной аккаунт (primary)."""
+    """Команды /code, !code, !код → основной аккаунт (primary), без проверок."""
     result = _extract_event(c, e)
     if result is None:
         return
     obj, mtext, chat_id, chat_name, username = result
 
     cmd_lower = mtext.replace("\n", "").strip().lower()
-    if cmd_lower not in ("/code", "!code"):
+    if cmd_lower not in ("/code", "!code", "!код"):
         return
 
-    logger.info(f"Команда /code от {username} в чате {chat_name}")
-
-    pc = get_purchase_checker()
-    if pc and _check_session_revoked(c, chat_id, chat_name):
-        return
+    logger.info(f"Команда {cmd_lower} от {username} в чате {chat_name}")
 
     primary_account = _resolve_primary_account_username()
 
@@ -303,17 +299,8 @@ BACKUP_COMMAND = "!код"
 
 
 def handle_guard_code_backup_command(c, e):
-    """Запасная команда !код → основной аккаунт, без проверок."""
-    result = _extract_event(c, e)
-    if result is None:
-        return
-    obj, mtext, chat_id, chat_name, username = result
-
-    backup_kw = BACKUP_COMMAND.strip().lower()
-    if not backup_kw or mtext.replace("\n", "").strip().lower() != backup_kw:
-        return
-
-    logger.info(f"Запасная команда {backup_kw} от {username} (без проверок)")
+    """!код теперь обрабатывается в handle_guard_code_command — эта функция отключена."""
+    pass
 
     primary_account = _resolve_primary_account_username()
     gh = get_guard_handler()
