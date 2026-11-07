@@ -241,6 +241,21 @@ def track_order_handler(c: "Cardinal", e: NewOrderEvent):
         logger.error(f"track_order_handler: {ex}")
 
 
+def init_order_handler(c: "Cardinal", e):
+    """
+    При старте бота заполняет привязки для всех существующих заказов.
+    Нужно чтобы !возврат работал даже после перезапуска.
+    """
+    try:
+        chat_id = e.order.chat_id
+        order_id = e.order.id
+        # Не перезаписываем если уже есть (новый заказ важнее старого)
+        if str(chat_id) not in _chat_to_order:
+            register_order_for_chat(chat_id, order_id)
+    except Exception as ex:
+        logger.error(f"init_order_handler: {ex}")
+
+
 # ---------------------------------------------------------------------------
 # Публичная функция для вызова из Telegram бота командой /refund <order_id>
 # ---------------------------------------------------------------------------
@@ -264,3 +279,4 @@ def manual_refund(cardinal: "Cardinal", order_id: str, chat_id: int | str | None
 BIND_TO_NEW_MESSAGE = [auto_refund_message_handler]
 BIND_TO_LAST_CHAT_MESSAGE_CHANGED = [auto_refund_message_handler]
 BIND_TO_NEW_ORDER = [track_order_handler]
+BIND_TO_INIT_ORDER = [init_order_handler]
