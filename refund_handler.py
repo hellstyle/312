@@ -201,8 +201,21 @@ def auto_refund_message_handler(c: "Cardinal",
     if not any(kw in msg_text for kw in cfg["keywords"]):
         return
 
-    # Ищем заказ этого чата
+    # Ищем заказ этого чата — сначала в кэше, потом в saved_orders runner'а
     order_id = get_order_for_chat(chat_id)
+    if not order_id:
+        # Пробуем найти в живых заказах runner'а
+        try:
+            saved = getattr(c.runner, "saved_orders", None)
+            if saved:
+                for o in reversed(list(saved.values())):
+                    if str(o.chat_id) == str(chat_id):
+                        order_id = o.id
+                        register_order_for_chat(chat_id, order_id)
+                        break
+        except Exception as ex:
+            logger.error(f"Автовозврат: ошибка поиска в saved_orders: {ex}")
+
     if not order_id:
         logger.info(f"Автовозврат: покупатель {author} ({chat_id}) запросил возврат, "
                     f"но заказ для этого чата не найден.")
