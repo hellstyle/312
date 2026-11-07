@@ -36,17 +36,47 @@ logger = logging.getLogger("RefundHandler")
 
 # Хранилище: chat_id → order_id последнего заказа этого чата
 _chat_to_order: dict[int | str, str] = {}
+_CHAT_ORDER_PATH = "storage/chat_to_order.json"
+
+
+def _load_chat_to_order():
+    """Загружает привязки чат→заказ с диска."""
+    import json, os
+    global _chat_to_order
+    try:
+        if os.path.exists(_CHAT_ORDER_PATH):
+            with open(_CHAT_ORDER_PATH, "r", encoding="utf-8") as f:
+                _chat_to_order = json.load(f)
+            logger.info(f"RefundHandler: загружено {len(_chat_to_order)} привязок чат→заказ")
+    except Exception as e:
+        logger.error(f"RefundHandler._load_chat_to_order: {e}")
+
+
+def _save_chat_to_order():
+    """Сохраняет привязки чат→заказ на диск."""
+    import json, os
+    try:
+        os.makedirs(os.path.dirname(_CHAT_ORDER_PATH), exist_ok=True)
+        with open(_CHAT_ORDER_PATH, "w", encoding="utf-8") as f:
+            json.dump(_chat_to_order, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"RefundHandler._save_chat_to_order: {e}")
+
+
+_load_chat_to_order()
 
 
 def register_order_for_chat(chat_id: int | str, order_id: str):
     """Запоминает ID последнего заказа для чата. Вызывается при выдаче товара."""
-    _chat_to_order[chat_id] = order_id
+    _chat_to_order[str(chat_id)] = order_id
+    _save_chat_to_order()
     logger.debug(f"Чат {chat_id} → заказ {order_id}")
 
 
 def get_order_for_chat(chat_id: int | str) -> str | None:
     """Возвращает ID последнего заказа для чата или None."""
-    return _chat_to_order.get(chat_id)
+    return _chat_to_order.get(str(chat_id))
+
 
 
 def _get_config(cardinal: "Cardinal") -> dict:
