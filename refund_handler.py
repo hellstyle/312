@@ -112,6 +112,27 @@ def _do_refund(cardinal: "Cardinal", order_id: str, chat_id: int | str,
     :param source: "auto" (из сообщения покупателя) | "manual" (из Telegram команды)
     """
     cfg = _get_config(cardinal)
+
+    # Проверяем статус заказа — подтверждённые не возвращаем
+    try:
+        from FunPayAPI.common.enums import OrderStatuses
+        saved = getattr(cardinal.runner, "saved_orders", None)
+        if saved and order_id in saved:
+            order = saved[order_id]
+            if order.status == OrderStatuses.CLOSED:
+                logger.info(f"Возврат отклонён: заказ {order_id} уже подтверждён покупателем")
+                if chat_id:
+                    Thread(target=cardinal.send_message,
+                           args=(chat_id,
+                                 "❌ Возврат невозможен — вы уже подтвердили выполнение заказа.\n"
+                                 "После подтверждения средства не возвращаются.",
+                                 buyer_username),
+                           kwargs={"watermark": False},
+                           daemon=True).start()
+                return False
+    except Exception as ex:
+        logger.error(f"_do_refund: ошибка проверки статуса: {ex}")
+
     attempts = 3
     last_error = None
 
