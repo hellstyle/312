@@ -787,7 +787,7 @@ class TGBot:
                     f"⏱ Действителен ещё {_remaining} сек\n"
                     f"🆔 Chat ID: {chat_id}"
                 )
-                self.bot.send_message(self.owner_chat_id, owner_message)
+                self.bot.send_message(self.owner_chat_id, owner_message, disable_notification=True)
                 logger.info(f"Уведомление о Guard коде отправлено владельцу (TG): {username} -> {code}")
             except Exception as ex:
                 logger.error(f"Ошибка отправки уведомления владельцу: {ex}")
