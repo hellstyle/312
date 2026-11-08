@@ -9,3 +9,4 @@ lxml>=5.3.0
 bcrypt>=4.2.0
 pysocks>=1.7.1
 cryptography>=42.0.0
+qrcode>=7.4.2
