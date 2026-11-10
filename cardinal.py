@@ -862,6 +862,7 @@ class Cardinal(object):
 
             Thread(target=self.telegram.run, daemon=True).start()
 
+        self.__init_account()
         self.runner = FunPayAPI.Runner(self.account, self.old_mode_enabled)
         self.__update_profile()
         self.run_handlers(self.post_init_handlers, (self,))
