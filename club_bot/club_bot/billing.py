@@ -4,31 +4,34 @@
 Модуль бухгалтерии клубного бота.
 
 Ставки:
-  rust  — 300 руб/час
-  cs    — 250 руб/час
+  rust  — 60 ₽/час
+  cs    — 60 ₽/час
 
-Скидка 10% от 6 часов и выше.
+Скидка 10% от 6 часов.
+Раздел прибыли: 50% владелец / 50% клуб.
 """
 
 import json
 import os
 import threading
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 import logging
 
 logger = logging.getLogger("ClubBot.Billing")
 
-STORAGE_DIR    = "club_bot/data"
-LEDGER_FILE    = f"{STORAGE_DIR}/ledger.json"
+STORAGE_DIR = "club_bot/data"
+LEDGER_FILE = f"{STORAGE_DIR}/ledger.json"
 
 RATES = {
-    "rust": 300,
-    "cs":   250,
+    "rust": 60,
+    "cs":   60,
 }
 DISCOUNT_THRESHOLD = 6
 DISCOUNT_PERCENT   = 10
-CURRENCY           = "₸"
+CURRENCY           = "₽"
+OWNER_SHARE        = 0.5   # 50% владельцу
+CLUB_SHARE         = 0.5   # 50% клубу
 
 _lock = threading.Lock()
 
@@ -38,20 +41,13 @@ _lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 def calc_price(pool: str, hours: float) -> dict:
-    """
-    Возвращает словарь:
-      rate        — ставка за час
-      hours       — кол-во часов
-      base        — базовая стоимость
-      discount    — сумма скидки
-      discount_pct— процент скидки
-      total       — итого к оплате
-    """
     rate     = RATES.get(pool.lower(), 300)
     base     = rate * hours
     disc_pct = DISCOUNT_PERCENT if hours >= DISCOUNT_THRESHOLD else 0
     discount = base * disc_pct / 100
     total    = base - discount
+    owner    = round(total * OWNER_SHARE, 2)
+    club     = round(total * CLUB_SHARE, 2)
     return {
         "rate":         rate,
         "hours":        hours,
@@ -59,12 +55,13 @@ def calc_price(pool: str, hours: float) -> dict:
         "discount":     round(discount, 2),
         "discount_pct": disc_pct,
         "total":        round(total, 2),
+        "owner_share":  owner,
+        "club_share":   club,
     }
 
 
 def format_receipt(pool: str, hours: float, acc_username: str) -> str:
-    """Возвращает текстовый чек."""
-    p   = calc_price(pool, hours)
+    p = calc_price(pool, hours)
     txt = (
         f"🧾 <b>Чек аренды</b>\n\n"
         f"🎮 Игра: <b>{pool.upper()}</b>\n"
@@ -75,16 +72,19 @@ def format_receipt(pool: str, hours: float, acc_username: str) -> str:
     )
     if p["discount_pct"]:
         txt += f"🎁 Скидка {p['discount_pct']}%: −{p['discount']} {CURRENCY}\n"
-    txt += f"\n✅ <b>Итого: {p['total']} {CURRENCY}</b>"
+    txt += (
+        f"\n✅ <b>Итого: {p['total']} {CURRENCY}</b>\n\n"
+        f"💼 Владелец: <b>{p['owner_share']} {CURRENCY}</b>\n"
+        f"🏢 Клуб: <b>{p['club_share']} {CURRENCY}</b>"
+    )
     return txt
 
 
 # ---------------------------------------------------------------------------
-# Журнал операций
+# Журнал
 # ---------------------------------------------------------------------------
 
 def _load_ledger() -> dict:
-    """Загружает журнал с диска."""
     try:
         if os.path.exists(LEDGER_FILE):
             with open(LEDGER_FILE, "r", encoding="utf-8") as f:
@@ -102,23 +102,17 @@ def _save_ledger(ledger: dict):
 
 
 def record_session(session: dict):
-    """
-    Записывает завершённую сессию в журнал.
-    session — словарь сессии из sessions.json
-    """
-    pool     = session.get("pool", "?")
-    hours    = session.get("hours", 0)
-    acc      = session.get("acc_username", "?")
-    player   = session.get("player_id", 0)
-    started  = session.get("started_at")
-    ended    = session.get("ends_at")
+    pool    = session.get("pool", "?")
+    hours   = session.get("hours", 0)
+    acc     = session.get("acc_username", "?")
+    player  = session.get("player_id", 0)
+    price   = calc_price(pool, hours)
+    day_key = date.today().isoformat()
+    ledger  = _load_ledger()
 
-    price    = calc_price(pool, hours)
-    day_key  = date.today().isoformat()
-
-    ledger   = _load_ledger()
     if day_key not in ledger:
-        ledger[day_key] = {"sessions": [], "total": 0.0}
+        ledger[day_key] = {"sessions": [], "total": 0.0,
+                           "owner_total": 0.0, "club_total": 0.0}
 
     entry = {
         "session_id":   session.get("session_id", ""),
@@ -131,26 +125,34 @@ def record_session(session: dict):
         "discount":     price["discount"],
         "discount_pct": price["discount_pct"],
         "total":        price["total"],
-        "started_at":   started,
-        "ended_at":     ended,
+        "owner_share":  price["owner_share"],
+        "club_share":   price["club_share"],
+        "started_at":   session.get("started_at"),
+        "ended_at":     session.get("ends_at"),
         "recorded_at":  datetime.now().isoformat(),
     }
     ledger[day_key]["sessions"].append(entry)
-    ledger[day_key]["total"] = round(
-        sum(e["total"] for e in ledger[day_key]["sessions"]), 2
-    )
+    ledger[day_key]["total"]       = round(sum(e["total"] for e in ledger[day_key]["sessions"]), 2)
+    ledger[day_key]["owner_total"] = round(sum(e["owner_share"] for e in ledger[day_key]["sessions"]), 2)
+    ledger[day_key]["club_total"]  = round(sum(e["club_share"] for e in ledger[day_key]["sessions"]), 2)
     _save_ledger(ledger)
-    logger.info(f"Billing: записана сессия {entry['session_id']} — {price['total']} руб")
+    logger.info(f"Billing: {entry['session_id']} — {price['total']} ₽ (вл: {price['owner_share']} / клуб: {price['club_share']})")
 
 
 # ---------------------------------------------------------------------------
 # Отчёты
 # ---------------------------------------------------------------------------
 
+def _salary_block(owner_total: float, club_total: float, total: float) -> str:
+    return (
+        f"\n{'─'*20}\n"
+        f"💼 <b>Зарплата владельца: {owner_total} {CURRENCY}</b>\n"
+        f"🏢 <b>Зарплата клуба: {club_total} {CURRENCY}</b>\n"
+        f"💰 <b>Общая выручка: {total} {CURRENCY}</b>"
+    )
+
+
 def report_day(day: Optional[str] = None) -> str:
-    """
-    Отчёт за день. day — строка 'YYYY-MM-DD', по умолчанию сегодня.
-    """
     day_key = day or date.today().isoformat()
     ledger  = _load_ledger()
     data    = ledger.get(day_key)
@@ -158,11 +160,12 @@ def report_day(day: Optional[str] = None) -> str:
     if not data or not data.get("sessions"):
         return f"📅 <b>{day_key}</b>\n\nСессий за этот день нет."
 
-    sessions = data["sessions"]
-    total    = data["total"]
+    sessions    = data["sessions"]
+    total       = data["total"]
+    owner_total = data.get("owner_total", round(total * OWNER_SHARE, 2))
+    club_total  = data.get("club_total",  round(total * CLUB_SHARE, 2))
 
-    # Группируем по пулам
-    by_pool  = {}
+    by_pool = {}
     for e in sessions:
         p = e["pool"].upper()
         if p not in by_pool:
@@ -176,22 +179,21 @@ def report_day(day: Optional[str] = None) -> str:
         lines.append(
             f"🎮 {pool_name}: {stats['count']} сес. × "
             f"{round(stats['hours'],1)} ч = "
-            f"<b>{round(stats['total'],2)} ₸</b>"
+            f"<b>{round(stats['total'],2)} {CURRENCY}</b>"
         )
-
-    lines.append(f"\n💰 <b>Итого за день: {total} ₸</b>")
     lines.append(f"📊 Всего сессий: {len(sessions)}")
+    lines.append(_salary_block(owner_total, club_total, total))
     return "\n".join(lines)
 
 
 def report_period(days: int = 7) -> str:
-    """Отчёт за последние N дней."""
-    from datetime import timedelta
-    ledger = _load_ledger()
-    today  = date.today()
-    grand_total = 0.0
+    ledger        = _load_ledger()
+    today         = date.today()
+    grand_total   = 0.0
+    grand_owner   = 0.0
+    grand_club    = 0.0
     session_count = 0
-    lines  = [f"📊 <b>Отчёт за {days} дней</b>\n"]
+    lines = [f"📊 <b>Отчёт за {days} дней</b>\n"]
 
     for i in range(days - 1, -1, -1):
         day_key = (today - timedelta(days=i)).isoformat()
@@ -199,41 +201,54 @@ def report_period(days: int = 7) -> str:
         if not data or not data.get("sessions"):
             lines.append(f"📅 {day_key}: —")
             continue
-        day_total = data["total"]
-        cnt       = len(data["sessions"])
+        day_total   = data["total"]
+        day_owner   = data.get("owner_total", round(day_total * OWNER_SHARE, 2))
+        day_club    = data.get("club_total",  round(day_total * CLUB_SHARE, 2))
+        cnt         = len(data["sessions"])
         grand_total   += day_total
+        grand_owner   += day_owner
+        grand_club    += day_club
         session_count += cnt
-        lines.append(f"📅 {day_key}: {cnt} сес. — <b>{day_total} руб</b>")
+        lines.append(
+            f"📅 {day_key}: {cnt} сес. — "
+            f"<b>{day_total} {CURRENCY}</b> "
+            f"(вл: {day_owner} / клуб: {day_club})"
+        )
 
-    lines.append(f"\n💰 <b>Итого за период: {round(grand_total,2)} ₸</b>")
     lines.append(f"📊 Всего сессий: {session_count}")
+    lines.append(_salary_block(
+        round(grand_owner, 2),
+        round(grand_club, 2),
+        round(grand_total, 2)
+    ))
     return "\n".join(lines)
 
 
 def report_detailed_day(day: Optional[str] = None) -> list[str]:
-    """
-    Детальный отчёт за день — список строк (по одной на сессию).
-    Возвращает список сообщений (разбито на части если много).
-    """
-    day_key  = day or date.today().isoformat()
-    ledger   = _load_ledger()
-    data     = ledger.get(day_key)
+    day_key = day or date.today().isoformat()
+    ledger  = _load_ledger()
+    data    = ledger.get(day_key)
 
     if not data or not data.get("sessions"):
         return [f"📅 <b>{day_key}</b>\n\nСессий нет."]
 
+    total       = data["total"]
+    owner_total = data.get("owner_total", round(total * OWNER_SHARE, 2))
+    club_total  = data.get("club_total",  round(total * CLUB_SHARE, 2))
+
     msgs = [f"📅 <b>Детальный отчёт за {day_key}</b>\n"]
     for i, e in enumerate(data["sessions"], 1):
-        disc = f" (−{e['discount']} ₸)" if e.get("discount") else ""
+        disc = f" (−{e['discount']} {CURRENCY})" if e.get("discount") else ""
         msgs.append(
             f"{i}. {e['pool'].upper()} | {e['acc_username']}\n"
             f"   👤 Игрок: {e['player_id']}\n"
-            f"   ⏱ {e['hours']} ч × {e['rate']} ₸{disc}\n"
-            f"   ✅ {e['total']} ₸"
+            f"   ⏱ {e['hours']} ч × {e['rate']} {CURRENCY}{disc}\n"
+            f"   ✅ {e['total']} {CURRENCY}  "
+            f"(вл: {e.get('owner_share', round(e['total']*OWNER_SHARE,2))} / "
+            f"клуб: {e.get('club_share', round(e['total']*CLUB_SHARE,2))})"
         )
-    msgs.append(f"\n💰 <b>Итого: {data['total']} ₸</b>")
+    msgs.append(_salary_block(owner_total, club_total, total))
 
-    # Объединяем в блоки по 4096 символов
     result, current = [], msgs[0]
     for line in msgs[1:]:
         if len(current) + len(line) + 1 > 4000:
