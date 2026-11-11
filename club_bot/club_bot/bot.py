@@ -22,6 +22,10 @@ from telebot.types import (
 from club_bot.storage import load_clubs, save_clubs, load_sessions, save_sessions
 from club_bot.accounts import load_pool, get_guard_code, POOLS
 from club_bot import billing
+from club_bot.settings import (get_kaspi, set_kaspi, get_pc_count, set_pc_count,
+                                get_club_name, set_club_name, get_payment_number,
+                                get_bank_name)
+from club_bot.invite import create_invite, get_invite, mark_used, list_invites
 
 logger = logging.getLogger("ClubBot")
 
@@ -39,19 +43,29 @@ CB_END_SESSION  = "cg_end"
 
 # Меню администратора
 CB_MENU_MAIN    = "cm_main"
-CB_MENU_ACCS    = "cm_accs"       # выбор пула
-CB_POOL_ACCS    = "cm_pool"       # список аккаунтов пула
-CB_ACC_ACTION   = "cm_acc"        # действия с аккаунтом
-CB_GIVE_HOURS   = "cm_give_h"     # выбор часов
-CB_QR_HOURS     = "cm_qr_h"       # выбор часов для QR
-CB_BILLING_MENU = "cm_bill"       # меню бухгалтерии
+CB_MENU_ACCS    = "cm_accs"
+CB_POOL_ACCS    = "cm_pool"
+CB_ACC_ACTION   = "cm_acc"
+CB_QR_HOURS     = "cm_qr_h"
+CB_BILLING_MENU = "cm_bill"
 
-OWNER_ID           = 6701153666
-WARNING_BEFORE_END = 15 * 60
-CHECK_INTERVAL     = 60
-QR_ACTIVATION_TIMEOUT = 30 * 60  # 30 мин — если не нажал "Зашёл", сессия закрывается
+# Флоу оплаты (обычный старт)
+CB_PAY_GAME     = "cp_game"    # выбор игры
+CB_PAY_COUNT    = "cp_cnt"     # выбор кол-ва аккаунтов
+CB_PAY_PC       = "cp_pc"      # выбор места
+CB_PAY_HOURS    = "cp_hours"   # выбор часов
+CB_PAY_CONFIRM  = "cp_confirm" # "Оплатил"
+CB_PAY_APPROVE  = "cp_approve" # владелец подтверждает
+CB_PAY_REJECT   = "cp_reject"  # владелец отклоняет
 
-# Пресеты часов для кнопок
+# Продление
+CB_EXTEND_WANT  = "cx_want"    # игрок хочет продлить
+
+OWNER_ID              = 6701153666
+WARNING_BEFORE_END    = 15 * 60
+CHECK_INTERVAL        = 60
+QR_ACTIVATION_TIMEOUT = 30 * 60
+
 HOUR_PRESETS = [1, 2, 3, 4, 6, 8, 12, 24]
 
 
@@ -62,6 +76,7 @@ class ClubBot:
         self.clubs: dict    = load_clubs()
         self.sessions: dict = load_sessions()
         self._pending: dict = {}
+        self._pending_payments: dict = {}  # {user_id: {game, pc, hours, amount}}
         self._register_handlers()
         self._start_session_watcher()
 
@@ -234,10 +249,59 @@ class ClubBot:
             status = "🟢 Свободен"
 
         kb.row(
-            IKB("📱 Выдать (QR)", callback_data=f"{CB_QR_HOURS}:sel:{pool}:{acc_idx}"),
+            IKB("📱 Выдать (QR)",   callback_data=f"{CB_QR_HOURS}:sel:{pool}:{acc_idx}"),
+            IKB("🧪 Тест (QR)",     callback_data=f"{CB_QR_HOURS}:test:{pool}:{acc_idx}"),
         )
         kb.row(IKB("◀️ Назад", callback_data=f"{CB_POOL_ACCS}:give:{pool}"))
         return kb, status, acc_name
+
+    def _kb_game_select(self) -> IKM:
+        """Выбор игры для флоу оплаты."""
+        kb = IKM()
+        kb.row(IKB("🎮 Rust",    callback_data=f"{CB_PAY_GAME}:rust"))
+        kb.row(IKB("🎮 CS GO 2", callback_data=f"{CB_PAY_GAME}:cs"))
+        return kb
+
+    def _kb_acc_count(self, game: str) -> IKM:
+        """Выбор количества аккаунтов."""
+        kb = IKM()
+        kb.row(
+            IKB("1 аккаунт",                    callback_data=f"{CB_PAY_COUNT}:{game}:1"),
+            IKB("2 аккаунта  🎁 −15%",          callback_data=f"{CB_PAY_COUNT}:{game}:2"),
+        )
+        return kb
+
+    def _kb_pc_select(self, game: str, count: int) -> IKM:
+        """Выбор компьютерного места."""
+        kb  = IKM()
+        cnt = get_pc_count()
+        row = []
+        for i in range(1, cnt + 1):
+            row.append(IKB(str(i), callback_data=f"{CB_PAY_PC}:{game}:{i}"))
+            if len(row) == 5:
+                kb.row(*row)
+                row = []
+        if row:
+            kb.row(*row)
+        return kb
+
+    def _kb_pay_hours(self, game: str, pc: int) -> IKM:
+        """Выбор часов для флоу оплаты."""
+        kb  = IKM()
+        row = []
+        for h in HOUR_PRESETS:
+            price = billing.calc_price(game, h)
+            if price["discount_pct"]:
+                label = f"{h}ч  {int(price['base'])}→{int(price['total'])}₸"
+            else:
+                label = f"{h}ч  —  {int(price['total'])}₸"
+            row.append(IKB(label, callback_data=f"{CB_PAY_HOURS}:{game}:{pc}:{h}"))
+            if len(row) == 2:
+                kb.row(*row)
+                row = []
+        if row:
+            kb.row(*row)
+        return kb
 
     def _kb_billing(self) -> IKM:
         """Меню бухгалтерии."""
@@ -283,10 +347,47 @@ class ClubBot:
                 self._handle_qr_token(m, arg[3:])
                 return
 
+            # Инвайт-ссылка для регистрации администратора
+            if arg.startswith("admin_"):
+                token = arg[6:]
+                invite = get_invite(token)
+                if not invite:
+                    bot.send_message(m.chat.id,
+                        "❌ Ссылка недействительна или уже использована.")
+                    return
+                mark_used(token)
+                name     = m.from_user.first_name or ""
+                username = m.from_user.username or str(uid)
+                self.clubs[str(uid)] = {
+                    "name":       name,
+                    "username":   username,
+                    "role":       "admin",
+                    "pools":      invite.get("pools", ["rust", "cs"]),
+                    "granted_at": datetime.now().isoformat(),
+                }
+                self._save()
+                bot.send_message(m.chat.id,
+                    f"✅ <b>Вы зарегистрированы как администратор!</b>\n\n"
+                    f"🏢 Клуб: <b>{get_club_name()}</b>\n"
+                    f"🎮 Пулы: <b>{self._fmt_pools(invite.get('pools', ['rust', 'cs']))}</b>\n\n"
+                    f"Нажмите /menu для открытия панели управления.")
+                self._notify_owner(
+                    f"👨‍💼 Новый администратор зарегистрирован\n\n"
+                    f"👤 {name} (@{username})\n"
+                    f"🆔 ID: <code>{uid}</code>")
+                return
+
             if self._is_owner(uid):
                 bot.send_message(m.chat.id,
                     "👑 <b>Панель владельца</b>\n\nВыберите раздел:",
                     reply_markup=self._kb_main_menu(uid))
+                bot.send_message(m.chat.id,
+                    "⚙️ <b>Настройки:</b>\n"
+                    f"/setname — название клуба (сейчас: <b>{get_club_name()}</b>)\n"
+                    f"/setcaspi — номер Kaspi (сейчас: <code>{get_kaspi() or 'не задан'}</code>)\n"
+                    f"/setpc — кол-во мест (сейчас: <code>{get_pc_count()}</code>)\n"
+                    f"/genlink — ссылка для регистрации админа\n"
+                    "/resetbilling — сбросить бухгалтерию")
                 return
 
             if self._is_admin(uid):
@@ -313,21 +414,26 @@ class ClubBot:
                         f"/extend [часы] — запросить продление")
                 return
 
-            # Новый пользователь
+            # Новый пользователь — запрос доступа или флоу оплаты
             name     = m.from_user.first_name or ""
             username = m.from_user.username or str(uid)
-            self._pending[uid] = {"name": name, "username": username}
+
+            kaspi = get_payment_number()
+            if not kaspi:
+                bot.send_message(m.chat.id,
+                    f"👋 Добро пожаловать в <b>{get_club_name()}</b>!\n\n"
+                    "⚠️ Касса пока не настроена. Обратитесь к администратору.")
+                return
+
             bot.send_message(m.chat.id,
-                "👋 Добро пожаловать!\n\nВаш запрос отправлен владельцу.\nОжидайте.")
-            kb = IKM()
-            kb.row(
-                IKB("✅ Выдать права Админа", callback_data=f"{CB_GRANT_ADMIN}:{uid}"),
-                IKB("❌ Отказать",            callback_data=f"{CB_DENY}:{uid}"),
-            )
-            self._notify_owner(
-                f"🔔 Новый запрос доступа\n\n"
-                f"👤 {name} (@{username})\n"
-                f"🆔 ID: <code>{uid}</code>", kb)
+                f"👋 <b>Добро пожаловать в {get_club_name()}!</b>\n\n"
+                "🎮 Здесь вы можете арендовать аккаунт для игры.\n\n"
+                "⚠️ <b>Обратите внимание:</b>\n"
+                "• Оплата производится за аренду аккаунта\n"
+                "• Часы пользования компьютером оплачиваются <b>отдельно</b> у администратора клуба\n"
+                "• При заказе 2 аккаунтов — <b>скидка 15%</b>!\n\n"
+                "Выберите игру:")
+            bot.send_message(m.chat.id, "👇", reply_markup=self._kb_game_select())
 
         @bot.message_handler(commands=["menu"])
         def on_menu(m: Message):
@@ -336,6 +442,76 @@ class ClubBot:
                 return
             bot.send_message(m.chat.id, "📋 Главное меню:",
                              reply_markup=self._kb_main_menu(uid))
+
+        # /genlink — генерация инвайт-ссылки для админа
+        @bot.message_handler(commands=["genlink"])
+        def on_genlink(m: Message):
+            if not self._is_owner(m.from_user.id): return
+            token    = create_invite()
+            username = self._get_bot_username()
+            link     = f"https://t.me/{username}?start=admin_{token}"
+            active   = list_invites()
+            bot.send_message(m.chat.id,
+                f"🔗 <b>Ссылка для регистрации администратора:</b>\n\n"
+                f"<code>{link}</code>\n\n"
+                f"⏳ Действительна 48 часов\n"
+                f"🔁 Одноразовая\n\n"
+                f"Активных ссылок: {len(active)}")
+
+        # /setname — название клуба
+        @bot.message_handler(commands=["setname"])
+        def on_setname(m: Message):
+            if not self._is_owner(m.from_user.id): return
+            parts = m.text.strip().split(maxsplit=1)
+            if len(parts) < 2:
+                bot.send_message(m.chat.id,
+                    f"Текущее название: <b>{get_club_name()}</b>\n\n"
+                    f"Использование: /setname Название клуба")
+                return
+            set_club_name(parts[1].strip())
+            bot.send_message(m.chat.id, f"✅ Название клуба: <b>{parts[1].strip()}</b>")
+
+        # /setbank — выбор банка
+        @bot.message_handler(commands=["setbank"])
+        def on_setbank(m: Message):
+            bot.send_message(m.chat.id, "ℹ️ В казахстанском боте используется только Kaspi.")
+
+        # /setcaspi — установить номер Каспи
+        @bot.message_handler(commands=["setcaspi"])
+        def on_setcaspi(m: Message):
+            if not self._is_owner(m.from_user.id): return
+            parts = m.text.strip().split(maxsplit=1)
+            if len(parts) < 2:
+                bot.send_message(m.chat.id,
+                    f"Текущий номер Каспи: <code>{get_kaspi() or 'не задан'}</code>\n\n"
+                    f"Использование: /setcaspi 7XXXXXXXXXX")
+                return
+            set_kaspi(parts[1].strip())
+            bot.send_message(m.chat.id, f"✅ Номер Каспи обновлён: <code>{parts[1].strip()}</code>")
+
+        # /setpc — установить количество мест
+        @bot.message_handler(commands=["setpc"])
+        def on_setpc(m: Message):
+            if not self._is_owner(m.from_user.id): return
+            parts = m.text.strip().split(maxsplit=1)
+            if len(parts) < 2:
+                bot.send_message(m.chat.id,
+                    f"Текущее кол-во мест: <code>{get_pc_count()}</code>\n\n"
+                    f"Использование: /setpc 10")
+                return
+            try:
+                count = int(parts[1].strip())
+                set_pc_count(count)
+                bot.send_message(m.chat.id, f"✅ Количество мест обновлено: <code>{count}</code>")
+            except ValueError:
+                bot.send_message(m.chat.id, "❌ Укажите число.")
+
+        # /resetbilling — сброс бухгалтерии
+        @bot.message_handler(commands=["resetbilling"])
+        def on_resetbilling(m: Message):
+            if not self._is_owner(m.from_user.id): return
+            billing.reset_billing()
+            bot.send_message(m.chat.id, "✅ Бухгалтерия сброшена.")
 
         # /status — статус сессии для игрока
         @bot.message_handler(commands=["status"])
@@ -375,7 +551,10 @@ class ClubBot:
                 if s.get("active") and str(s.get("player_id")) == uid
             ]
             if not active_sessions:
-                bot.send_message(m.chat.id, "❌ У вас нет активной сессии.")
+                bot.send_message(m.chat.id,
+                    "❌ У вас нет активной сессии.\n\n"
+                    "⚠️ Когда сессия завершится — подойдите к администратору "
+                    "клуба для получения нового QR кода.")
                 return
             parts = m.text.strip().split()
             try:
@@ -383,19 +562,20 @@ class ClubBot:
             except ValueError:
                 extra_hours = 1.0
             sid, s = active_sessions[0]
+
+            # Сначала спрашиваем подтверждение у игрока
             kb = IKM()
             kb.row(
-                IKB(f"✅ Продлить {extra_hours} ч",
-                    callback_data=f"{CB_EXTEND_YES}:{sid}:{extra_hours}"),
-                IKB("❌ Отклонить", callback_data=f"{CB_EXTEND_NO}:{sid}"),
+                IKB(f"✅ Да, хочу продлить на {extra_hours} ч",
+                    callback_data=f"{CB_EXTEND_WANT}:{sid}:{extra_hours}"),
+                IKB("❌ Нет", callback_data="extend_cancel"),
             )
-            self._notify_owner(
-                f"⏳ Запрос на продление\n\n"
-                f"👤 Игрок: <code>{uid}</code>\n"
-                f"🎯 {s['pool'].upper()} #{s['acc_idx']} ({s['acc_username']})\n"
-                f"➕ {extra_hours} ч", kb)
             bot.send_message(m.chat.id,
-                f"✅ Запрос на продление {extra_hours} ч отправлен.")
+                f"⏳ Вы хотите продлить сессию на <b>{extra_hours} ч</b>?\n\n"
+                f"⚠️ Запрос уйдёт владельцу на подтверждение.\n"
+                f"После истечения текущей сессии вам нужно будет подойти "
+                f"к администратору за новым QR кодом.",
+                reply_markup=kb)
 
         # /price — калькулятор
         @bot.message_handler(commands=["price"])
@@ -473,6 +653,194 @@ class ClubBot:
                     bot.edit_message_text("\n".join(lines), cid, mid,
                                           reply_markup=self._kb_clubs())
 
+            # ── Флоу оплаты ─────────────────────────────────────────────
+
+            elif data.startswith(f"{CB_PAY_GAME}:"):
+                game = data.split(":")[1]
+                name = "Rust" if game == "rust" else "CS GO 2"
+                bot.edit_message_text(
+                    f"🎮 Игра: <b>{name}</b>\n\n"
+                    f"👥 Выберите количество аккаунтов:\n"
+                    f"<i>🎁 При выборе 2 аккаунтов — скидка 15%!</i>",
+                    cid, mid,
+                    reply_markup=self._kb_acc_count(game))
+
+            elif data.startswith(f"{CB_PAY_COUNT}:"):
+                _, game, count = data.split(":")
+                count = int(count)
+                name  = "Rust" if game == "rust" else "CS GO 2"
+                bot.edit_message_text(
+                    f"🎮 Игра: <b>{name}</b>\n"
+                    f"👥 Аккаунтов: <b>{count}</b>"
+                    + (" 🎁 (скидка 15%)" if count >= 2 else "") +
+                    f"\n\n💺 Выберите номер вашего места:",
+                    cid, mid,
+                    reply_markup=self._kb_pc_select(game, count))
+
+            elif data.startswith(f"{CB_PAY_PC}:"):
+                parts = data.split(":")
+                game  = parts[1]
+                count = int(parts[2])
+                pc    = int(parts[3])
+                name  = "Rust" if game == "rust" else "CS GO 2"
+                bot.edit_message_text(
+                    f"🎮 Игра: <b>{name}</b>\n"
+                    f"👥 Аккаунтов: <b>{count}</b>\n"
+                    f"💺 Место: <b>#{pc}</b>\n\n"
+                    f"⏱ Выберите время аренды:\n\n"
+                    f"⚠️ Оплата за аренду аккаунта — отдельно от оплаты компьютерного времени!",
+                    cid, mid,
+                    reply_markup=self._kb_pay_hours(game, count, pc))
+
+            elif data.startswith(f"{CB_PAY_HOURS}:"):
+                parts = data.split(":")
+                game  = parts[1]
+                count = int(parts[2])
+                pc    = int(parts[3])
+                hours = float(parts[4])
+                price = billing.calc_price(game, hours, count)
+                bank  = get_bank_name()
+                num   = get_payment_number()
+                name  = "Rust" if game == "rust" else "CS GO 2"
+
+                self._pending_payments[uid] = {
+                    "game": game, "pc": pc, "hours": hours, "count": count,
+                    "amount": price["total"], "name": name,
+                    "user_id": uid,
+                    "username": f"@{c.from_user.username}" if c.from_user.username else str(uid),
+                }
+
+                disc_text = f"🎁 Скидка {price['discount_pct']}% применена\n" if price["discount_pct"] else ""
+                kb = IKM()
+                kb.row(IKB("✅ Я оплатил", callback_data=f"{CB_PAY_CONFIRM}:{uid}"))
+
+                bot.edit_message_text(
+                    f"🧾 <b>Детали аренды</b>\n\n"
+                    f"🎮 Игра: <b>{name}</b>\n"
+                    f"👥 Аккаунтов: <b>{count}</b>\n"
+                    f"💺 Место: <b>#{pc}</b>\n"
+                    f"⏱ Время: <b>{hours} ч</b>\n"
+                    f"💰 Сумма: <b>{int(price['total'])} {billing.CURRENCY}</b>\n"
+                    + disc_text +
+                    f"\n📱 <b>Оплатите через {bank}:</b>\n"
+                    f"<code>{num}</code>\n\n"
+                    f"⚠️ <b>Важно:</b> оплата за аренду аккаунта не включает оплату "
+                    f"компьютерного времени — оно оплачивается отдельно администратору клуба.\n\n"
+                    f"После оплаты нажмите кнопку ниже:",
+                    cid, mid, reply_markup=kb)
+
+            elif data.startswith(f"{CB_PAY_CONFIRM}:"):
+                pay_uid = int(data.split(":")[1])
+                payment = self._pending_payments.get(pay_uid)
+                if not payment:
+                    bot.answer_callback_query(c.id, "❌ Данные оплаты не найдены.", show_alert=True)
+                    return
+                bot.edit_message_text(
+                    "⏳ Ваша оплата отправлена на проверку. Ожидайте подтверждения...",
+                    cid, mid)
+                # Уведомляем владельца
+                kb = IKM()
+                kb.row(
+                    IKB("✅ Подтвердить", callback_data=f"{CB_PAY_APPROVE}:{pay_uid}"),
+                    IKB("❌ Отклонить",   callback_data=f"{CB_PAY_REJECT}:{pay_uid}"),
+                )
+                self._notify_owner(
+                    f"💳 <b>Запрос на оплату</b>\n\n"
+                    f"👤 {payment['username']} (ID: <code>{pay_uid}</code>)\n"
+                    f"🎮 Игра: <b>{payment['name']}</b>\n"
+                    f"💺 Место: <b>#{payment['pc']}</b>\n"
+                    f"⏱ Время: <b>{payment['hours']} ч</b>\n"
+                    f"💰 Сумма: <b>{int(payment['amount'])} ₸</b>", kb)
+
+            elif data.startswith(f"{CB_PAY_APPROVE}:"):
+                if not self._is_owner(uid): return
+                pay_uid = int(data.split(":")[1])
+                payment = self._pending_payments.pop(pay_uid, None)
+                if not payment:
+                    bot.answer_callback_query(c.id, "❌ Данные не найдены.", show_alert=True)
+                    return
+                bot.edit_message_reply_markup(cid, mid, reply_markup=None)
+                bot.send_message(cid, f"✅ Оплата подтверждена для игрока <code>{pay_uid}</code>.")
+
+                # Выдаём аккаунты автоматически
+                pool  = payment["game"]
+                hours = payment["hours"]
+                count = payment.get("count", 1)
+                accs  = load_pool(POOLS[pool])
+
+                # Ищем нужное кол-во свободных аккаунтов
+                free_accs = []
+                for i, a in enumerate(accs, 1):
+                    if not self._get_active_session_for_acc(pool, i):
+                        free_accs.append((i, a))
+                    if len(free_accs) == count:
+                        break
+
+                if len(free_accs) < count:
+                    bot.send_message(cid,
+                        f"⚠️ Нет {count} свободных аккаунтов {pool.upper()}! "
+                        f"Доступно: {len(free_accs)}. Выдайте вручную.")
+                    try:
+                        bot.send_message(pay_uid,
+                            "✅ Оплата подтверждена!\n\n"
+                            "⚠️ К сожалению, не хватает свободных аккаунтов. "
+                            "Администратор свяжется с вами.")
+                    except Exception:
+                        pass
+                    return
+
+                try:
+                    bot.send_message(pay_uid,
+                        f"✅ <b>Оплата подтверждена!</b>\n\n"
+                        f"🎮 Игра: <b>{payment['name']}</b>\n"
+                        f"👥 Аккаунтов: <b>{count}</b>\n"
+                        f"💺 Место: <b>#{payment['pc']}</b>\n"
+                        f"⏱ Время аренды: <b>{hours} ч</b>\n\n"
+                        f"Данные аккаунтов ниже 👇")
+                except Exception as e:
+                    bot.send_message(cid, f"❌ Не удалось отправить игроку: {e}")
+                    return
+
+                for acc_idx, acc in free_accs:
+                    session_id = f"{pay_uid}_{pool}_{acc_idx}_{int(time.time())}"
+                    self.sessions[session_id] = {
+                        "session_id":        session_id,
+                        "player_id":         pay_uid,
+                        "admin_id":          OWNER_ID,
+                        "pool":              pool,
+                        "acc_idx":           acc_idx,
+                        "acc_username":      acc["username"],
+                        "acc_password":      acc["password"],
+                        "acc_shared_secret": acc["shared_secret"],
+                        "hours":             hours,
+                        "started_at":        None,
+                        "ends_at":           None,
+                        "warned":            False,
+                        "active":            True,
+                        "created_at":        time.time(),
+                        "pc_number":         payment["pc"],
+                    }
+                    self._save_sessions()
+                    text, kb2 = self._account_text(acc, pool, acc_idx, session_id)
+                    try:
+                        bot.send_message(pay_uid, text, reply_markup=kb2)
+                        self._start_guard_autoupdate(pay_uid, session_id, acc["shared_secret"])
+                    except Exception:
+                        pass
+
+            elif data.startswith(f"{CB_PAY_REJECT}:"):
+                if not self._is_owner(uid): return
+                pay_uid = int(data.split(":")[1])
+                self._pending_payments.pop(pay_uid, None)
+                bot.edit_message_reply_markup(cid, mid, reply_markup=None)
+                bot.send_message(cid, f"❌ Оплата отклонена для <code>{pay_uid}</code>.")
+                try:
+                    bot.send_message(pay_uid,
+                        "❌ Ваша оплата не подтверждена.\n\n"
+                        "Если вы считаете это ошибкой — обратитесь к администратору клуба.")
+                except Exception:
+                    pass
+
             # ── Выбор пула ──────────────────────────────────────────────
             elif data == CB_MENU_ACCS:
                 if not self._is_authorized(uid): return
@@ -533,7 +901,17 @@ class ClubBot:
                         reply_markup=self._kb_hours(CB_QR_HOURS + ":do", pool, acc_idx))
                     return
 
-                # action == "do" — генерируем QR
+                if action == "test":
+                    bot.edit_message_text(
+                        f"🧪 <b>ТЕСТОВАЯ выдача</b> {pool.upper()} #{acc_idx}\n\n"
+                        f"Бухгалтерия и уведомления о списании не ведутся.\n"
+                        f"Выберите время:",
+                        cid, mid,
+                        reply_markup=self._kb_hours(CB_QR_HOURS + ":testdo", pool, acc_idx))
+                    return
+
+                # Определяем тестовый режим
+                is_test = (action == "testdo")
                 hours = float(parts[4])
                 accs  = load_pool(POOLS[pool])
                 if acc_idx < 1 or acc_idx > len(accs):
@@ -572,24 +950,28 @@ class ClubBot:
 
                 try:
                     from club_bot.qr_generator import create_qr_token, generate_qr_image
-                    token  = create_qr_token(pool, acc_idx, hours, uid)
+                    token  = create_qr_token(pool, acc_idx, hours, uid, test=is_test)
                     qr_img = generate_qr_image(self._get_bot_username(), token)
+                    test_badge = "🧪 ТЕСТ — " if is_test else ""
                     bot.send_photo(cid, qr_img,
                         caption=(
-                            f"📱 <b>QR — {pool.upper()} #{acc_idx}</b>\n"
+                            f"📱 <b>{test_badge}QR — {pool.upper()} #{acc_idx}</b>\n"
                             f"👤 {acc['username']}\n"
-                            f"⏱ {hours} ч | {billing.calc_price(pool,hours)['total']} ₽\n\n"
-                            f"📲 <b>Игрок сканирует QR → открывается Telegram бот → "
+                            f"⏱ {hours} ч"
+                            + (f" | {billing.calc_price(pool,hours)['total']} {billing.CURRENCY}" if not is_test else " | 🧪 Тест — без списания") +
+                            f"\n\n📲 <b>Игрок сканирует QR → открывается Telegram бот → "
                             f"автоматически выдаются данные аккаунта</b>\n"
                             f"⏳ Действителен 24 часа\n\n"
-                            f"⚠️ Передача данных третьим лицам запрещена!"
+                            + ("⚠️ Передача данных третьим лицам запрещена!" if not is_test
+                               else "🧪 <b>Тестовый режим — бухгалтерия не ведётся</b>")
                         ))
-                    # Возврат в главное меню
-                    bot.edit_message_text(
-                        f"✅ QR выдан для {pool.upper()} #{acc_idx} на {hours} ч\n\n"
-                        f"📋 Главное меню:",
-                        cid, mid,
-                        reply_markup=self._kb_main_menu(uid))
+                    result_text = (
+                        f"✅ QR выдан для {pool.upper()} #{acc_idx} на {hours} ч\n\n📋 Главное меню:"
+                        if not is_test else
+                        f"🧪 Тестовый QR выдан для {pool.upper()} #{acc_idx} на {hours} ч\n\n📋 Главное меню:"
+                    )
+                    bot.edit_message_text(result_text, cid, mid,
+                                          reply_markup=self._kb_main_menu(uid))
                 except ImportError:
                     bot.send_message(cid, "❌ pip install qrcode[pil]")
                 except Exception as e:
@@ -736,6 +1118,33 @@ class ClubBot:
                     f"🎯 {s['pool'].upper()} #{s['acc_idx']} ({s['acc_username']})\n"
                     f"⏱ До {ends_str}")
 
+            elif data.startswith(f"{CB_EXTEND_WANT}:"):
+                # Игрок подтвердил — отправляем запрос владельцу
+                _, sid, eh = data.split(":")
+                s = self.sessions.get(sid)
+                if not s or not s.get("active"):
+                    bot.answer_callback_query(c.id, "❌ Сессия завершена.", show_alert=True)
+                    return
+                bot.edit_message_reply_markup(cid, mid, reply_markup=None)
+                bot.send_message(cid,
+                    f"✅ Запрос на продление {eh} ч отправлен владельцу.\n"
+                    f"Ожидайте подтверждения.")
+                kb = IKM()
+                kb.row(
+                    IKB(f"✅ Продлить на {eh} ч",
+                        callback_data=f"{CB_EXTEND_YES}:{sid}:{eh}"),
+                    IKB("❌ Отклонить", callback_data=f"{CB_EXTEND_NO}:{sid}"),
+                )
+                self._notify_owner(
+                    f"⏳ Запрос на продление\n\n"
+                    f"👤 Игрок: <code>{uid}</code>\n"
+                    f"🎯 {s['pool'].upper()} #{s['acc_idx']} ({s['acc_username']})\n"
+                    f"➕ {eh} ч", kb)
+
+            elif data == "extend_cancel":
+                bot.edit_message_reply_markup(cid, mid, reply_markup=None)
+                bot.send_message(cid, "ℹ️ Запрос на продление отменён.")
+
             elif data.startswith(f"{CB_EXTEND_YES}:"):
                 if not self._is_owner(uid): return
                 _, sid, eh = data.split(":")
@@ -816,17 +1225,31 @@ class ClubBot:
             return
         acc = accs[acc_idx - 1]
         mark_token_used(token)
-        active = self._get_active_session_for_acc(pool, acc_idx)
+        is_test = data.get("test", False)
+        active  = self._get_active_session_for_acc(pool, acc_idx)
         if active:
             ends_at = active.get("ends_at")
-            if ends_at:
+            started = active.get("started_at")
+            if ends_at and started:
                 remaining = max(0, int(ends_at - time.time()))
-                h, mn = remaining // 3600, (remaining % 3600) // 60
+                h, mn     = remaining // 3600, (remaining % 3600) // 60
+                ends_str  = datetime.fromtimestamp(ends_at).strftime("%H:%M")
+                self.bot.send_message(m.chat.id,
+                    f"🔴 <b>Аккаунт занят!</b>\n\n"
+                    f"🎮 {pool.upper()} #{acc_idx} — {acc['username']}\n"
+                    f"⏱ Освободится через {h}ч {mn}м (в {ends_str})")
+            elif not started:
+                self.bot.send_message(m.chat.id,
+                    f"🟡 <b>Аккаунт зарезервирован</b> — QR выдан, игрок ещё не зашёл.\n"
+                    f"Попробуйте позже.")
+            # Уведомляем владельца только если не тест
+            if not is_test:
                 self._notify_owner(
                     f"⚠️ QR на занятый аккаунт!\n\n"
                     f"👤 Игрок: <code>{uid}</code>\n"
-                    f"🎯 {pool.upper()} #{acc_idx} ({acc['username']})\n"
-                    f"Занят ещё {h}ч {mn}м")
+                    f"🎯 {pool.upper()} #{acc_idx} ({acc['username']})")
+            return
+            ends_at = active.get("ends_at")
         session_id = f"{uid}_{pool}_{acc_idx}_{int(time.time())}"
         self.sessions[session_id] = {
             "session_id":        session_id,
@@ -843,17 +1266,22 @@ class ClubBot:
             "warned":            False,
             "active":            True,
             "created_at":        time.time(),
+            "test":              is_test,
         }
         self._save_sessions()
         text, kb = self._account_text(acc, pool, acc_idx, session_id)
+        if is_test:
+            self.bot.send_message(m.chat.id,
+                "🧪 <b>Тестовая сессия</b> — бухгалтерия не ведётся")
         self.bot.send_message(m.chat.id, text, reply_markup=kb)
-        # Запускаем автообновление Guard кода пока не нажато "Зашёл"
         self._start_guard_autoupdate(uid, session_id, acc["shared_secret"])
-        self._notify_owner(
-            f"📱 QR активирован\n\n"
-            f"👤 <code>{uid}</code>\n"
-            f"🎯 {pool.upper()} #{acc_idx} ({acc['username']})\n"
-            f"⏱ {hours} ч")
+        # Уведомление только для реальных сессий
+        if not is_test:
+            self._notify_owner(
+                f"📱 QR активирован\n\n"
+                f"👤 <code>{uid}</code>\n"
+                f"🎯 {pool.upper()} #{acc_idx} ({acc['username']})\n"
+                f"⏱ {hours} ч")
 
     # ------------------------------------------------------------------
     # Автообновление Guard кода до входа на аккаунт
@@ -907,48 +1335,58 @@ class ClubBot:
         s["active"] = False
         s["ended_at"] = time.time()
         self._save_sessions()
-        try:
-            billing.record_session(s)
-        except Exception as e:
-            logger.error(f"billing.record_session: {e}")
+
+        # Тестовые сессии не пишутся в бухгалтерию и не уведомляют
+        is_test = s.get("test", False)
+        if not is_test:
+            try:
+                billing.record_session(s)
+            except Exception as e:
+                logger.error(f"billing.record_session: {e}")
         player_id = s["player_id"]
         pool      = s["pool"].upper()
         acc       = s["acc_username"]
-        receipt   = billing.format_receipt(s["pool"], s["hours"], acc)
+        is_test   = s.get("test", False)
+        receipt   = billing.format_receipt(s["pool"], s["hours"], acc) if not is_test else ""
+
         if reason == "expired":
             try:
                 self.bot.send_message(player_id,
-                    f"⏰ Ваша сессия завершена.\n🎮 {pool} ({acc})\n\n{receipt}\n\n"
-                    f"🔒 Доступ к аккаунту закрыт. Для продолжения обратитесь к администратору.")
+                    f"⏰ Ваша сессия завершена.\n🎮 {pool} ({acc})\n"
+                    + (f"\n{receipt}\n\n" if receipt else "\n") +
+                    f"🔒 Доступ закрыт. Обратитесь к администратору за новым QR.")
             except Exception:
                 pass
-            self._notify_owner(
-                f"⏰ Сессия истекла\n\n"
-                f"👤 <code>{player_id}</code>\n"
-                f"🎯 {pool} #{s['acc_idx']} ({acc})\n\n{receipt}")
+            if not is_test:
+                self._notify_owner(
+                    f"⏰ Сессия истекла\n\n"
+                    f"👤 <code>{player_id}</code>\n"
+                    f"🎯 {pool} #{s['acc_idx']} ({acc})\n\n{receipt}")
         elif reason == "not_activated":
             try:
                 self.bot.send_message(player_id,
-                    f"⏰ Сессия отменена — вы не активировали аккаунт в течение 30 минут.\n"
-                    f"🔒 Для получения доступа обратитесь к администратору.")
+                    f"⏰ Сессия отменена — аккаунт не активирован за 30 мин.\n"
+                    f"🔒 Обратитесь к администратору за новым QR.")
             except Exception:
                 pass
-            self._notify_owner(
-                f"⚠️ Сессия не активирована и отменена\n\n"
-                f"👤 <code>{player_id}</code>\n"
-                f"🎯 {pool} #{s['acc_idx']} ({acc})\n"
-                f"QR не был использован в течение 30 мин")
+            if not is_test:
+                self._notify_owner(
+                    f"⚠️ Сессия не активирована\n\n"
+                    f"👤 <code>{player_id}</code>\n"
+                    f"🎯 {pool} #{s['acc_idx']} ({acc})")
         else:
             try:
                 self.bot.send_message(player_id,
-                    f"🛑 Сессия завершена.\n\n{receipt}\n\n"
-                    f"🔒 Доступ к аккаунту закрыт.")
+                    f"🛑 Сессия завершена.\n"
+                    + (f"\n{receipt}\n\n" if receipt else "\n") +
+                    f"🔒 Доступ закрыт.")
             except Exception:
                 pass
-            self._notify_owner(
-                f"🛑 Сессия завершена\n\n"
-                f"👤 <code>{player_id}</code>\n"
-                f"🎯 {pool} #{s['acc_idx']} ({acc})\n\n{receipt}")
+            if not is_test:
+                self._notify_owner(
+                    f"🛑 Сессия завершена\n\n"
+                    f"👤 <code>{player_id}</code>\n"
+                    f"🎯 {pool} #{s['acc_idx']} ({acc})\n\n{receipt}")
 
     # ------------------------------------------------------------------
     # Наблюдатель сессий

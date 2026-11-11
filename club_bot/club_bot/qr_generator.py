@@ -20,7 +20,7 @@ import logging
 
 logger = logging.getLogger("ClubBot.QR")
 
-STORAGE_DIR = "club_bot/data"
+STORAGE_DIR    = "club_shared/data"
 QR_TOKENS_FILE = f"{STORAGE_DIR}/qr_tokens.json"
 TOKEN_TTL = 24 * 3600  # токен живёт 24 часа
 
@@ -44,17 +44,19 @@ def _save_tokens(tokens: dict):
             json.dump(tokens, f, ensure_ascii=False, indent=2)
 
 
-def create_qr_token(pool: str, acc_idx: int, hours: float, admin_id: int) -> str:
+def create_qr_token(pool: str, acc_idx: int, hours: float, admin_id: int,
+                    test: bool = False) -> str:
     """Создаёт токен для QR кода и сохраняет его."""
     token = secrets.token_urlsafe(16)
     tokens = _load_tokens()
     tokens[token] = {
-        "pool": pool,
-        "acc_idx": acc_idx,
-        "hours": hours,
-        "admin_id": admin_id,
+        "pool":       pool,
+        "acc_idx":    acc_idx,
+        "hours":      hours,
+        "admin_id":   admin_id,
         "created_at": time.time(),
-        "used": False,
+        "used":       False,
+        "test":       test,
     }
     _save_tokens(tokens)
     return token

@@ -2,21 +2,24 @@
 # -*- coding: utf-8 -*-
 """
 Хранилище данных клубного бота.
+Клубы и настройки — раздельные.
+Сессии — ОБЩИЕ для всех клубных ботов (club_shared).
 """
 import json
 import os
 import threading
-from typing import Optional
 
-STORAGE_DIR = "club_bot/data"
-CLUBS_FILE = f"{STORAGE_DIR}/clubs.json"
-SESSIONS_FILE = f"{STORAGE_DIR}/sessions.json"
+STORAGE_DIR        = "club_bot/data"
+SHARED_STORAGE_DIR = "club_shared/data"
+CLUBS_FILE         = f"{STORAGE_DIR}/clubs.json"
+SESSIONS_FILE      = f"{SHARED_STORAGE_DIR}/sessions.json"  # общая БД
 
 _lock = threading.Lock()
 
 
 def _ensure_dir():
     os.makedirs(STORAGE_DIR, exist_ok=True)
+    os.makedirs(SHARED_STORAGE_DIR, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------

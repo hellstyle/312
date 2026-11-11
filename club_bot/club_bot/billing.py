@@ -24,12 +24,13 @@ STORAGE_DIR = "club_bot/data"
 LEDGER_FILE = f"{STORAGE_DIR}/ledger.json"
 
 RATES = {
-    "rust": 60,
-    "cs":   60,
+    "rust": 300,
+    "cs":   300,
 }
-DISCOUNT_THRESHOLD = 6
-DISCOUNT_PERCENT   = 10
-CURRENCY           = "₽"
+DISCOUNT_THRESHOLD  = 6
+DISCOUNT_PERCENT    = 10
+MULTI_ACC_DISCOUNT  = 15   # скидка % за 2 аккаунта
+CURRENCY            = "₸"
 OWNER_SHARE        = 0.5   # 50% владельцу
 CLUB_SHARE         = 0.5   # 50% клубу
 
@@ -40,10 +41,14 @@ _lock = threading.Lock()
 # Расчёт стоимости
 # ---------------------------------------------------------------------------
 
-def calc_price(pool: str, hours: float) -> dict:
+def calc_price(pool: str, hours: float, acc_count: int = 1) -> dict:
     rate     = RATES.get(pool.lower(), 300)
-    base     = rate * hours
+    base     = rate * hours * acc_count
+    # Скидка за часы
     disc_pct = DISCOUNT_PERCENT if hours >= DISCOUNT_THRESHOLD else 0
+    # Скидка за 2 аккаунта (суммируется)
+    if acc_count >= 2:
+        disc_pct += MULTI_ACC_DISCOUNT
     discount = base * disc_pct / 100
     total    = base - discount
     owner    = round(total * OWNER_SHARE, 2)
@@ -51,6 +56,7 @@ def calc_price(pool: str, hours: float) -> dict:
     return {
         "rate":         rate,
         "hours":        hours,
+        "acc_count":    acc_count,
         "base":         round(base, 2),
         "discount":     round(discount, 2),
         "discount_pct": disc_pct,
@@ -258,3 +264,10 @@ def report_detailed_day(day: Optional[str] = None) -> list[str]:
             current += "\n" + line
     result.append(current)
     return result
+
+
+def reset_billing():
+    """Полный сброс журнала бухгалтерии."""
+    if os.path.exists(LEDGER_FILE):
+        os.remove(LEDGER_FILE)
+    logger.info("Billing: журнал сброшен")
